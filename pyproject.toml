@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "img2answer"
+version = "0.1.0"
+description = "Local PDF question extraction and image-search preparation tools."
+requires-python = ">=3.11"
+dependencies = [
+  "Pillow>=10",
+  "PyMuPDF>=1.24",
+  "PyYAML>=6",
+]
+
+[project.scripts]
+img2answer-poc = "img2answer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
