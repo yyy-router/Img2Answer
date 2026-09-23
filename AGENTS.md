@@ -46,11 +46,13 @@ conda activate .\.conda
 分支命名建议：
 
 ```text
-feature/<issue-id>-<short-name>
-fix/<issue-id>-<short-name>
-docs/<issue-id>-<short-name>
-test/<issue-id>-<short-name>
+feature/<short-name>
+fix/<short-name>
+docs/<short-name>
+test/<short-name>
 ```
+
+Issue 编号应通过 GitHub Issue、PR 标题或 PR 描述关联，例如在 PR 描述中使用 `Closes #123`，不要求写入分支名。
 
 ## SDD Development Mode
 

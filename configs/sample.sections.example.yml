@@ -1,0 +1,8 @@
+documents:
+  sample_doc:
+    path: data/raw/sample.pdf
+    sections:
+      graphic_reasoning:
+        page_from: 1
+        page_to: 3
+
