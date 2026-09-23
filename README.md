@@ -2,17 +2,31 @@
 
 Img2Answer is a local-first Python project for preparing PDF question-bank materials for structured extraction and future image-based retrieval.
 
-The repository is intentionally initialized with a small public surface. Local source PDFs, generated images, local design notes, vector stores, databases, and conda environments are not committed.
+The current implementation is a first-stage POC. It focuses on reading configured PDF page ranges, rendering pages, generating simple graphic crop candidates, and writing a JSON report. Local source PDFs, generated images, local design notes, vector stores, databases, and conda environments are not committed.
 
-## Project Direction
+## Current Features
 
-The project aims to support:
+- Read YAML or JSON section configuration.
+- Inspect local PDF files and collect basic metadata:
+  - file path
+  - page count
+  - SHA-256 hash
+- Validate configured page ranges.
+- Render configured PDF sections into PNG page images.
+- Generate simple crop candidates from rendered pages.
+- Write a JSON processing report.
+- Provide a CLI entry point.
+- Include unit and integration tests using generated sample PDFs, not real local materials.
 
-- local PDF section processing
-- target question-type extraction
-- page rendering and image crop preparation
-- structured question metadata storage
-- future image-to-question retrieval
+## Not Implemented Yet
+
+- OCR
+- ChromaDB vector storage
+- image embedding models
+- text or image search API
+- web UI
+- full question parsing
+- database-backed question storage
 
 ## Repository Rules
 
@@ -33,6 +47,81 @@ Do not commit:
 - local SQLite or database files
 - credentials, tokens, or account information
 
+## Environment
+
+Create the conda environment in the project root:
+
+```powershell
+conda env create -p .\.conda -f environment.yml
+conda activate .\.conda
+```
+
+The environment is intentionally stored at:
+
+```text
+.\.conda
+```
+
+## Configuration
+
+Use a section config to describe which PDF pages should be processed.
+
+Example:
+
+```yaml
+documents:
+  sample_doc:
+    path: data/raw/sample.pdf
+    sections:
+      graphic_reasoning:
+        page_from: 1
+        page_to: 3
+```
+
+An example config is provided at:
+
+```text
+configs/sample.sections.example.yml
+```
+
+Page numbers in config files are human-facing and start at `1`.
+
+## Run The POC
+
+From the project root:
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.conda\python.exe -m img2answer.cli --config configs\sample.sections.example.yml --output-dir data\processed --dpi 300
+```
+
+Outputs are written under:
+
+```text
+data/processed/
+  pages/
+  crops/
+  reports/
+```
+
+These outputs are ignored by Git.
+
+## Run Tests
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.conda\python.exe -m unittest discover -s tests -v
+```
+
+Current test coverage verifies:
+
+- config loading
+- invalid page range handling
+- PDF metadata inspection
+- section rendering
+- crop candidate generation
+- report writing
+
 ## Development Workflow
 
 This project follows an issue-first and SDD-style workflow:
@@ -49,15 +138,4 @@ Branch names should be short and do not need to contain the issue number:
 feature/pdf-section-crop-poc
 fix/page-range-validation
 ```
-
-## Runtime Environment
-
-The runtime environment should be created in the project root:
-
-```powershell
-conda env create -p .\.conda -f environment.yml
-conda activate .\.conda
-```
-
-The `.conda/` directory is ignored by Git.
 
