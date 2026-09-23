@@ -122,6 +122,26 @@ Current test coverage verifies:
 - crop candidate generation
 - report writing
 
+## CI Gate
+
+GitHub Actions runs the same test suite for pull requests targeting `main` and for pushes to `main`.
+
+The CI workflow uses Python 3.11 and installs the package with:
+
+```bash
+python -m pip install setuptools wheel
+python -m pip install -e . --no-build-isolation
+```
+
+Then it runs:
+
+```bash
+python -c "import img2answer; print(img2answer.__version__)"
+python -m unittest discover -s tests -v
+```
+
+CI does not depend on local-only paths such as `data/`, `docs/`, or `.conda/`.
+
 ## Development Workflow
 
 This project follows an issue-first and SDD-style workflow:
