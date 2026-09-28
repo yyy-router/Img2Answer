@@ -15,6 +15,10 @@ The current implementation is a first-stage POC. It focuses on reading configure
 - Render configured PDF sections into PNG page images.
 - Generate simple crop candidates from rendered pages.
 - Write a JSON processing report.
+- Persist local metadata into SQLite:
+  - source documents
+  - crop candidate images
+  - process report summaries
 - Provide a CLI entry point.
 - Include unit and integration tests using generated sample PDFs, not real local materials.
 
@@ -26,7 +30,6 @@ The current implementation is a first-stage POC. It focuses on reading configure
 - text or image search API
 - web UI
 - full question parsing
-- database-backed question storage
 
 ## Repository Rules
 
@@ -92,7 +95,7 @@ From the project root:
 
 ```powershell
 $env:PYTHONPATH = "src"
-.\.conda\python.exe -m img2answer.cli --config configs\sample.sections.example.yml --output-dir data\processed --dpi 300
+.\.conda\python.exe -m img2answer.cli --config configs\sample.sections.example.yml --output-dir data\processed --database data\processed\img2answer.sqlite3 --dpi 300
 ```
 
 Outputs are written under:
@@ -102,6 +105,7 @@ data/processed/
   pages/
   crops/
   reports/
+  img2answer.sqlite3
 ```
 
 These outputs are ignored by Git.
@@ -121,6 +125,7 @@ Current test coverage verifies:
 - section rendering
 - crop candidate generation
 - report writing
+- SQLite metadata persistence
 
 ## CI Gate
 
