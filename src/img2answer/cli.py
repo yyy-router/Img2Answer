@@ -17,22 +17,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", default="data/processed", help="Output directory for local artifacts.")
     parser.add_argument(
         "--database",
-        default="data/processed/img2answer.sqlite3",
-        help="SQLite database path for local metadata.",
+        default=None,
+        help="SQLite database path for local metadata. Defaults to <output-dir>/img2answer.sqlite3.",
     )
     parser.add_argument("--dpi", type=int, default=300, help="Render DPI.")
     args = parser.parse_args(argv)
 
     project_config = load_config(args.config)
     output_root = Path(args.output_dir)
-    store = SQLiteStore(args.database)
+    database_path = Path(args.database) if args.database else output_root / "img2answer.sqlite3"
+    store = SQLiteStore(database_path)
     store.initialize()
 
     for document_config in project_config.documents:
         metadata = inspect_pdf(document_config.path)
-        store.upsert_source_document(document_config.document_id, metadata)
         section_reports: list[SectionReport] = []
         all_candidates = []
+        section_candidates = {}
 
         for section in document_config.sections:
             validate_section(section, metadata.page_count)
@@ -42,11 +43,7 @@ def main(argv: list[str] | None = None) -> int:
             rendered_pages = render_section(metadata.path, section, page_dir, dpi=args.dpi)
             candidates = crop_pages(rendered_pages, crop_dir)
             all_candidates.extend(candidates)
-            store.replace_crop_candidates(
-                document_id=document_config.document_id,
-                section=section.name,
-                candidates=candidates,
-            )
+            section_candidates[section.name] = candidates
             section_reports.append(
                 SectionReport(
                     section=section.name,
@@ -65,8 +62,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         report_path = output_root / "reports" / f"{document_config.document_id}-report.json"
         write_report(report, report_path)
-        store.insert_process_report(
+        store.replace_document_run(
             document_id=document_config.document_id,
+            metadata=metadata,
+            section_candidates=section_candidates,
             report_path=report_path,
             report=report,
         )

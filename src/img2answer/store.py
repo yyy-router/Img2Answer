@@ -70,84 +70,56 @@ class SQLiteStore:
                 """
             )
 
-    def upsert_source_document(self, document_id: str, metadata: PdfMetadata) -> None:
-        now = utc_now_iso()
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO source_documents (
-                    id, source_path, sha256, page_count, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    source_path = excluded.source_path,
-                    sha256 = excluded.sha256,
-                    page_count = excluded.page_count,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    document_id,
-                    str(metadata.path),
-                    metadata.sha256,
-                    metadata.page_count,
-                    now,
-                    now,
-                ),
-            )
-
-    def replace_crop_candidates(
+    def replace_document_run(
         self,
         *,
         document_id: str,
-        section: str,
-        candidates: list[CropCandidate],
-    ) -> None:
-        now = utc_now_iso()
-        with self._connect() as connection:
-            for candidate in candidates:
-                image_id = crop_candidate_id(document_id, section, candidate)
-                connection.execute(
-                    """
-                    INSERT OR REPLACE INTO question_images (
-                        id,
-                        document_id,
-                        section,
-                        image_role,
-                        source_page_path,
-                        output_path,
-                        bbox_json,
-                        width,
-                        height,
-                        created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        image_id,
-                        document_id,
-                        section,
-                        "crop_candidate",
-                        str(candidate.source_page),
-                        str(candidate.output_path),
-                        json.dumps(list(candidate.bbox), ensure_ascii=False),
-                        candidate.width,
-                        candidate.height,
-                        now,
-                    ),
-                )
-
-    def insert_process_report(
-        self,
-        *,
-        document_id: str,
+        metadata: PdfMetadata,
+        section_candidates: dict[str, list[CropCandidate]],
         report_path: str | Path,
         report: dict[str, Any],
     ) -> str:
         now = utc_now_iso()
-        report_id = f"{document_id}:{now}"
+        report_id = document_id
         rendered_pages = sum(section.get("rendered_pages", 0) for section in report["processed_sections"])
         crop_candidates = sum(section.get("crop_candidates", 0) for section in report["processed_sections"])
         with self._connect() as connection:
+            self._upsert_source_document(connection, document_id, metadata, now)
+            connection.execute("DELETE FROM question_images WHERE document_id = ?", (document_id,))
+            for section, candidates in section_candidates.items():
+                for candidate in candidates:
+                    image_id = crop_candidate_id(document_id, section, candidate)
+                    connection.execute(
+                        """
+                        INSERT INTO question_images (
+                            id,
+                            document_id,
+                            section,
+                            image_role,
+                            source_page_path,
+                            output_path,
+                            bbox_json,
+                            width,
+                            height,
+                            created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            image_id,
+                            document_id,
+                            section,
+                            "crop_candidate",
+                            str(candidate.source_page),
+                            str(candidate.output_path),
+                            json.dumps(list(candidate.bbox), ensure_ascii=False),
+                            candidate.width,
+                            candidate.height,
+                            now,
+                        ),
+                    )
+
+            connection.execute("DELETE FROM process_reports WHERE document_id = ?", (document_id,))
             connection.execute(
                 """
                 INSERT INTO process_reports (
@@ -201,6 +173,35 @@ class SQLiteStore:
                 yield connection
         finally:
             connection.close()
+
+    def _upsert_source_document(
+        self,
+        connection: sqlite3.Connection,
+        document_id: str,
+        metadata: PdfMetadata,
+        now: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO source_documents (
+                id, source_path, sha256, page_count, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                source_path = excluded.source_path,
+                sha256 = excluded.sha256,
+                page_count = excluded.page_count,
+                updated_at = excluded.updated_at
+            """,
+            (
+                document_id,
+                str(metadata.path),
+                metadata.sha256,
+                metadata.page_count,
+                now,
+                now,
+            ),
+        )
 
 
 def crop_candidate_id(document_id: str, section: str, candidate: CropCandidate) -> str:

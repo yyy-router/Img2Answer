@@ -110,6 +110,12 @@ data/processed/
 
 These outputs are ignored by Git.
 
+If `--database` is omitted, the SQLite database is written to:
+
+```text
+<output-dir>/img2answer.sqlite3
+```
+
 ## Run Tests
 
 ```powershell

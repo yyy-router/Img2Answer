@@ -40,18 +40,13 @@ class StoreTests(unittest.TestCase):
 
             store = SQLiteStore(root / "img2answer.sqlite3")
             store.initialize()
-            store.upsert_source_document("sample", metadata)
-            store.replace_crop_candidates(
+            store.replace_document_run(
                 document_id="sample",
-                section=section.name,
-                candidates=candidates,
+                metadata=metadata,
+                section_candidates={section.name: candidates},
+                report_path=report_path,
+                report=report,
             )
-            store.replace_crop_candidates(
-                document_id="sample",
-                section=section.name,
-                candidates=candidates,
-            )
-            store.insert_process_report(document_id="sample", report_path=report_path, report=report)
 
             counts = store.counts()
             self.assertEqual(counts.source_documents, 1)
@@ -66,7 +61,33 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(image["document_id"], "sample")
             self.assertEqual(image["image_role"], "crop_candidate")
 
+            empty_report = build_report(
+                document_id="sample",
+                metadata=metadata,
+                sections=[
+                    SectionReport(
+                        section=section.name,
+                        page_from=section.page_from,
+                        page_to=section.page_to,
+                        rendered_pages=len(rendered_pages),
+                        crop_candidates=0,
+                    )
+                ],
+                crop_candidates=[],
+            )
+            store.replace_document_run(
+                document_id="sample",
+                metadata=metadata,
+                section_candidates={section.name: []},
+                report_path=report_path,
+                report=empty_report,
+            )
+
+            counts = store.counts()
+            self.assertEqual(counts.source_documents, 1)
+            self.assertEqual(counts.question_images, 0)
+            self.assertEqual(counts.process_reports, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
-
