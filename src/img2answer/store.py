@@ -163,6 +163,17 @@ class SQLiteStore:
         with self._connect() as connection:
             return list(connection.execute(f"SELECT * FROM {table} ORDER BY id"))
 
+    def fetch_question_images(self, document_id: str | None = None) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            if document_id is None:
+                return list(connection.execute("SELECT * FROM question_images ORDER BY id"))
+            return list(
+                connection.execute(
+                    "SELECT * FROM question_images WHERE document_id = ? ORDER BY id",
+                    (document_id,),
+                )
+            )
+
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path)

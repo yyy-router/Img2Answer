@@ -9,6 +9,7 @@ from .pdf_document import inspect_pdf, validate_section
 from .render_pages import render_section
 from .report import SectionReport, build_report, write_report
 from .store import SQLiteStore
+from .vector_store import ChromaImageVectorStore, PillowHashEmbeddingModel, embed_question_images
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -20,6 +21,17 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="SQLite database path for local metadata. Defaults to <output-dir>/img2answer.sqlite3.",
     )
+    parser.add_argument("--embed-images", action="store_true", help="Write crop candidate image vectors to ChromaDB.")
+    parser.add_argument(
+        "--chroma-dir",
+        default=None,
+        help="ChromaDB persistence directory. Defaults to <output-dir>/chroma.",
+    )
+    parser.add_argument(
+        "--chroma-collection",
+        default="question_images",
+        help="ChromaDB collection name for image vectors.",
+    )
     parser.add_argument("--dpi", type=int, default=300, help="Render DPI.")
     args = parser.parse_args(argv)
 
@@ -28,6 +40,12 @@ def main(argv: list[str] | None = None) -> int:
     database_path = Path(args.database) if args.database else output_root / "img2answer.sqlite3"
     store = SQLiteStore(database_path)
     store.initialize()
+    vector_store = None
+    embedding_model = None
+    if args.embed_images:
+        chroma_dir = Path(args.chroma_dir) if args.chroma_dir else output_root / "chroma"
+        vector_store = ChromaImageVectorStore(chroma_dir, collection_name=args.chroma_collection)
+        embedding_model = PillowHashEmbeddingModel()
 
     for document_config in project_config.documents:
         metadata = inspect_pdf(document_config.path)
@@ -70,6 +88,19 @@ def main(argv: list[str] | None = None) -> int:
             report=report,
         )
         print(report_path)
+        if vector_store is not None and embedding_model is not None:
+            image_rows = store.fetch_question_images(document_config.document_id)
+            embedding_result = embed_question_images(
+                image_rows,
+                vector_store=vector_store,
+                embedding_model=embedding_model,
+            )
+            print(
+                "image_vectors "
+                f"document_id={document_config.document_id} "
+                f"embedded={embedding_result.embedded} "
+                f"skipped_missing_files={embedding_result.skipped_missing_files}"
+            )
 
     return 0
 
