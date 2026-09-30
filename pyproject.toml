@@ -13,6 +13,11 @@ dependencies = [
   "PyYAML>=6",
 ]
 
+[project.optional-dependencies]
+vector = [
+  "chromadb>=0.5",
+]
+
 [project.scripts]
 img2answer-poc = "img2answer.cli:main"
 
