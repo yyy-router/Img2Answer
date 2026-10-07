@@ -19,7 +19,11 @@ class RecordingChromaImageVectorStore:
         self.persist_dir = Path(persist_dir)
         self.collection_name = collection_name
         self.records: list[EmbeddedImage] = []
+        self.deleted_document_ids: list[str] = []
         self.__class__.instances.append(self)
+
+    def delete_document_images(self, document_id: str) -> None:
+        self.deleted_document_ids.append(document_id)
 
     def upsert_images(self, records: list[EmbeddedImage]) -> None:
         self.records.extend(records)
@@ -182,6 +186,7 @@ documents:
             vector_store = RecordingChromaImageVectorStore.instances[0]
             self.assertEqual(vector_store.persist_dir, output_dir / "chroma")
             self.assertEqual(vector_store.collection_name, "question_images")
+            self.assertEqual(vector_store.deleted_document_ids, ["sample"])
             self.assertEqual(len(vector_store.records), 1)
             self.assertEqual(vector_store.records[0].metadata["document_id"], "sample")
 

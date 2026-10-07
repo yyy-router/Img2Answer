@@ -13,6 +13,9 @@ class ImageEmbeddingModel(Protocol):
 
 
 class ImageVectorStore(Protocol):
+    def delete_document_images(self, document_id: str) -> None:
+        """Remove image vectors for one document."""
+
     def upsert_images(self, records: Sequence["EmbeddedImage"]) -> None:
         """Insert or replace image vectors by id."""
 
@@ -59,6 +62,9 @@ class ChromaImageVectorStore:
         self.client = chromadb.PersistentClient(path=str(self.persist_dir))
         self.collection = self.client.get_or_create_collection(name=collection_name)
 
+    def delete_document_images(self, document_id: str) -> None:
+        self.collection.delete(where={"document_id": document_id})
+
     def upsert_images(self, records: Sequence[EmbeddedImage]) -> None:
         if not records:
             return
@@ -71,6 +77,7 @@ class ChromaImageVectorStore:
 
 
 def embed_question_images(
+    document_id: str,
     question_images: Sequence[Any],
     *,
     vector_store: ImageVectorStore,
@@ -78,6 +85,7 @@ def embed_question_images(
 ) -> ImageEmbeddingResult:
     embedded_records: list[EmbeddedImage] = []
     skipped_missing_files = 0
+    vector_store.delete_document_images(document_id)
 
     for row in question_images:
         image_path = Path(_row_value(row, "output_path"))

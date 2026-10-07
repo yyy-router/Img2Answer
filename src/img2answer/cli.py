@@ -91,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         if vector_store is not None and embedding_model is not None:
             image_rows = store.fetch_question_images(document_config.document_id)
             embedding_result = embed_question_images(
+                document_config.document_id,
                 image_rows,
                 vector_store=vector_store,
                 embedding_model=embedding_model,
