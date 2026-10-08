@@ -28,6 +28,26 @@ class RecordingSearchStore:
         return self.matches[:top_k]
 
 
+class FailingSearchStore:
+    def query_similar_images(self, embedding: list[float], top_k: int) -> list[ImageSearchMatch]:
+        raise AssertionError("vector search should not be called")
+
+
+class RecordingEmbeddingModel:
+    def __init__(self, embedding: list[float]):
+        self.embedding = embedding
+        self.called = False
+
+    def embed_image(self, image_path: str | Path) -> list[float]:
+        self.called = True
+        return self.embedding
+
+
+class FailingEmbeddingModel:
+    def embed_image(self, image_path: str | Path) -> list[float]:
+        raise AssertionError("embedding should not be called")
+
+
 class ImageSearchTests(unittest.TestCase):
     def test_search_similar_images_returns_sqlite_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -98,6 +118,65 @@ class ImageSearchTests(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].image_id, "missing")
             self.assertIsNone(results[0].record)
+
+    def test_search_similar_images_rejects_missing_query_image_before_embedding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = SQLiteStore(root / "img2answer.sqlite3")
+            store.initialize()
+
+            with self.assertRaisesRegex(FileNotFoundError, "query image does not exist"):
+                search_similar_images(
+                    root / "missing.png",
+                    sqlite_store=store,
+                    vector_store=FailingSearchStore(),
+                    embedding_model=FailingEmbeddingModel(),
+                    top_k=1,
+                )
+
+    def test_search_similar_images_rejects_zero_top_k_before_search(self) -> None:
+        self._assert_invalid_top_k_rejected_before_search(0)
+
+    def test_search_similar_images_rejects_negative_top_k_before_search(self) -> None:
+        self._assert_invalid_top_k_rejected_before_search(-1)
+
+    def test_search_similar_images_rejects_empty_embedding_before_search(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            query_image = root / "query.png"
+            Image.new("RGB", (16, 16), "white").save(query_image)
+            store = SQLiteStore(root / "img2answer.sqlite3")
+            store.initialize()
+            embedding_model = RecordingEmbeddingModel([])
+
+            with self.assertRaisesRegex(ValueError, "empty embedding"):
+                search_similar_images(
+                    query_image,
+                    sqlite_store=store,
+                    vector_store=FailingSearchStore(),
+                    embedding_model=embedding_model,
+                    top_k=1,
+                )
+
+            self.assertTrue(embedding_model.called)
+
+    def _assert_invalid_top_k_rejected_before_search(self, top_k: int) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            query_image = root / "query.png"
+            Image.new("RGB", (16, 16), "white").save(query_image)
+            store = SQLiteStore(root / "img2answer.sqlite3")
+            store.initialize()
+            embedding_model = FailingEmbeddingModel()
+
+            with self.assertRaisesRegex(ValueError, "top_k must be greater than 0"):
+                search_similar_images(
+                    query_image,
+                    sqlite_store=store,
+                    vector_store=FailingSearchStore(),
+                    embedding_model=embedding_model,
+                    top_k=top_k,
+                )
 
 
 def _create_store_with_one_image(root: Path) -> tuple[SQLiteStore, str]:
