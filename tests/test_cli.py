@@ -1,13 +1,16 @@
+import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from img2answer import cli as cli_module
 from img2answer.cli import main
 from img2answer.config import ConfigError
 from img2answer.store import SQLiteStore
-from img2answer.vector_store import EmbeddedImage
+from img2answer.vector_store import EmbeddedImage, ImageSearchMatch
 
 from helpers import create_sample_pdf
 
@@ -27,6 +30,23 @@ class RecordingChromaImageVectorStore:
 
     def upsert_images(self, records: list[EmbeddedImage]) -> None:
         self.records.extend(records)
+
+
+class RecordingSearchChromaImageVectorStore:
+    matches: list[ImageSearchMatch] = []
+
+    def __init__(self, persist_dir: str | Path, collection_name: str = "question_images"):
+        self.persist_dir = Path(persist_dir)
+        self.collection_name = collection_name
+
+    def delete_document_images(self, document_id: str) -> None:
+        raise AssertionError("search CLI should not delete vectors")
+
+    def upsert_images(self, records: list[EmbeddedImage]) -> None:
+        raise AssertionError("search CLI should not upsert vectors")
+
+    def query_similar_images(self, embedding: list[float], top_k: int) -> list[ImageSearchMatch]:
+        return self.matches[:top_k]
 
 
 class CliTests(unittest.TestCase):
@@ -189,6 +209,77 @@ documents:
             self.assertEqual(vector_store.deleted_document_ids, ["sample"])
             self.assertEqual(len(vector_store.records), 1)
             self.assertEqual(vector_store.records[0].metadata["document_id"], "sample")
+
+    def test_cli_search_image_outputs_json_results(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf_path = root / "sample.pdf"
+            create_sample_pdf(pdf_path)
+            config_path = root / "sections.yml"
+            output_dir = root / "processed"
+            config_path.write_text(
+                f"""
+documents:
+  sample:
+    path: {pdf_path.as_posix()}
+    sections:
+      graphic_reasoning:
+        page_from: 1
+        page_to: 1
+""".strip(),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "--output-dir",
+                        str(output_dir),
+                        "--dpi",
+                        "96",
+                    ]
+                ),
+                0,
+            )
+            store = SQLiteStore(output_dir / "img2answer.sqlite3")
+            image = store.fetch_question_images()[0]
+            RecordingSearchChromaImageVectorStore.matches = [
+                ImageSearchMatch(
+                    image_id=image["id"],
+                    distance=0.25,
+                    metadata={
+                        "image_id": image["id"],
+                        "document_id": image["document_id"],
+                        "section": image["section"],
+                    },
+                    document=image["output_path"],
+                )
+            ]
+            stdout = io.StringIO()
+
+            with patch.object(cli_module, "ChromaImageVectorStore", RecordingSearchChromaImageVectorStore):
+                with redirect_stdout(stdout):
+                    exit_code = main(
+                        [
+                            "search-image",
+                            "--image",
+                            image["output_path"],
+                            "--database",
+                            str(output_dir / "img2answer.sqlite3"),
+                            "--chroma-dir",
+                            str(output_dir / "chroma"),
+                            "--top-k",
+                            "1",
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["top_k"], 1)
+            self.assertEqual(len(payload["results"]), 1)
+            self.assertEqual(payload["results"][0]["image_id"], image["id"])
+            self.assertEqual(payload["results"][0]["record"]["id"], image["id"])
 
 
 if __name__ == "__main__":

@@ -156,6 +156,12 @@ class VectorStoreTests(unittest.TestCase):
             self.assertEqual(result["metadatas"][0]["section"], "graphic_reasoning")
             self.assertEqual(result["documents"], ["crop.png"])
 
+            matches = reopened.query_similar_images([0.1, 0.2, 0.3], top_k=1)
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(matches[0].image_id, "sample:graphic_reasoning:page-0001:crop-001")
+            self.assertEqual(matches[0].metadata["document_id"], "sample")
+            self.assertEqual(matches[0].document, "crop.png")
+
             reopened.delete_document_images("sample")
             self.assertEqual(reopened.collection.count(), 0)
 

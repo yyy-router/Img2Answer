@@ -174,6 +174,13 @@ class SQLiteStore:
                 )
             )
 
+    def fetch_question_image(self, image_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT * FROM question_images WHERE id = ?",
+                (image_id,),
+            ).fetchone()
+
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path)
