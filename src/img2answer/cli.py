@@ -1,18 +1,28 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
+import sys
 
 from .config import load_config
 from .graphic_crop import crop_pages
 from .pdf_document import inspect_pdf, validate_section
 from .render_pages import render_section
 from .report import SectionReport, build_report, write_report
+from .search import search_similar_images
 from .store import SQLiteStore
 from .vector_store import ChromaImageVectorStore, PillowHashEmbeddingModel, embed_question_images
 
 
 def main(argv: list[str] | None = None) -> int:
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list and args_list[0] == "search-image":
+        return search_image_main(args_list[1:])
+    return process_documents_main(args_list)
+
+
+def process_documents_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Render configured PDF sections and create crop candidates.")
     parser.add_argument("--config", required=True, help="Path to a JSON/YAML section config.")
     parser.add_argument("--output-dir", default="data/processed", help="Output directory for local artifacts.")
@@ -103,6 +113,50 @@ def main(argv: list[str] | None = None) -> int:
                 f"skipped_missing_files={embedding_result.skipped_missing_files}"
             )
 
+    return 0
+
+
+def search_image_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Search similar crop candidate images.")
+    parser.add_argument("--image", required=True, help="Query image path.")
+    parser.add_argument(
+        "--database",
+        default="data/processed/img2answer.sqlite3",
+        help="SQLite database path for local metadata.",
+    )
+    parser.add_argument(
+        "--chroma-dir",
+        default="data/processed/chroma",
+        help="ChromaDB persistence directory.",
+    )
+    parser.add_argument(
+        "--chroma-collection",
+        default="question_images",
+        help="ChromaDB collection name for image vectors.",
+    )
+    parser.add_argument("--top-k", type=int, default=5, help="Number of similar images to return.")
+    args = parser.parse_args(argv)
+
+    sqlite_store = SQLiteStore(args.database)
+    vector_store = ChromaImageVectorStore(args.chroma_dir, collection_name=args.chroma_collection)
+    results = search_similar_images(
+        args.image,
+        sqlite_store=sqlite_store,
+        vector_store=vector_store,
+        embedding_model=PillowHashEmbeddingModel(),
+        top_k=args.top_k,
+    )
+    print(
+        json.dumps(
+            {
+                "query_image": str(Path(args.image)),
+                "top_k": args.top_k,
+                "results": [result.__dict__ for result in results],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

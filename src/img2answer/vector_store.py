@@ -19,6 +19,9 @@ class ImageVectorStore(Protocol):
     def upsert_images(self, records: Sequence["EmbeddedImage"]) -> None:
         """Insert or replace image vectors by id."""
 
+    def query_similar_images(self, embedding: Sequence[float], top_k: int) -> list["ImageSearchMatch"]:
+        """Return nearest image vectors for one query embedding."""
+
 
 @dataclass(frozen=True)
 class EmbeddedImage:
@@ -32,6 +35,14 @@ class EmbeddedImage:
 class ImageEmbeddingResult:
     embedded: int
     skipped_missing_files: int
+
+
+@dataclass(frozen=True)
+class ImageSearchMatch:
+    image_id: str
+    distance: float | None
+    metadata: dict[str, str]
+    document: str | None
 
 
 class PillowHashEmbeddingModel:
@@ -74,6 +85,33 @@ class ChromaImageVectorStore:
             metadatas=[record.metadata for record in records],
             documents=[record.document for record in records],
         )
+
+    def query_similar_images(self, embedding: Sequence[float], top_k: int) -> list[ImageSearchMatch]:
+        if top_k < 1:
+            raise ValueError("top_k must be greater than 0")
+        result = self.collection.query(
+            query_embeddings=[list(embedding)],
+            n_results=top_k,
+            include=["metadatas", "documents", "distances"],
+        )
+        ids = result.get("ids", [[]])[0]
+        metadatas = result.get("metadatas", [[]])[0]
+        documents = result.get("documents", [[]])[0]
+        distances = result.get("distances", [[]])[0]
+        matches: list[ImageSearchMatch] = []
+        for index, image_id in enumerate(ids):
+            metadata = metadatas[index] if index < len(metadatas) and metadatas[index] else {}
+            document = documents[index] if index < len(documents) else None
+            distance = distances[index] if index < len(distances) else None
+            matches.append(
+                ImageSearchMatch(
+                    image_id=str(image_id),
+                    distance=float(distance) if distance is not None else None,
+                    metadata={str(key): str(value) for key, value in metadata.items()},
+                    document=str(document) if document is not None else None,
+                )
+            )
+        return matches
 
 
 def embed_question_images(

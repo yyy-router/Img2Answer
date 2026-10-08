@@ -23,13 +23,17 @@ Img2Answer 是一个本地优先的 Python 项目，用于把本地 PDF 题库�
   - 使用图片 ID 作为向量记录 ID
   - metadata 保留 SQLite 回查字段
   - 默认向量库目录为 `<output-dir>/chroma`
+- 支持通过本地查询图片检索相似裁剪候选图：
+  - 查询 ChromaDB Top K 相似向量
+  - 通过 `image_id` 回查 SQLite 图片记录
+  - 输出结构化 JSON
 - 提供 CLI 入口。
 - 使用生成的样本 PDF 做单元测试和集成测试，不依赖真实本地材料。
 
 ## 暂未实现
 
 - OCR
-- 上传图片搜索接口
+- Web API 图片搜索接口
 - 文本搜索接口
 - Web UI
 - 完整题目解析
@@ -145,6 +149,26 @@ $env:PYTHONPATH = "src"
 
 当前 embedding 模型是轻量、确定性的本地 POC 实现，用于验证数据链路；后续可以替换为更适合图形题检索的视觉模型。
 
+## 运行图片相似检索
+
+完成图片向量入库后，可以使用 `search-image` 子命令查询相似图片：
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.conda\python.exe -m img2answer.cli search-image --image data\query.png --database data\processed\img2answer.sqlite3 --chroma-dir data\processed\chroma --top-k 5
+```
+
+输出为 JSON，包含：
+
+- 查询图片路径
+- Top K 数量
+- 相似图片 ID
+- ChromaDB 距离
+- Chroma metadata
+- SQLite 图片记录
+
+如果 ChromaDB 中存在向量但 SQLite 已无对应图片记录，结果中的 `record` 会是 `null`，用于暴露本地数据一致性问题。
+
 ## 运行测试
 
 ```powershell
@@ -164,7 +188,11 @@ $env:PYTHONPATH = "src"
 - 重跑时元数据替换
 - 图片 embedding 生成
 - 图片向量入库 metadata
+- 真实 ChromaDB 持久化
+- 图片相似检索
+- 检索结果 SQLite 回查
 - CLI 向量入库调用链
+- CLI 图片检索调用链
 
 ## CI 门禁
 
@@ -174,7 +202,7 @@ CI 使用 Python 3.11，并执行：
 
 ```bash
 python -m pip install setuptools wheel
-python -m pip install -e . --no-build-isolation
+python -m pip install -e ".[vector]" --no-build-isolation
 python -c "import img2answer; print(img2answer.__version__)"
 python -m unittest discover -s tests -v
 ```
