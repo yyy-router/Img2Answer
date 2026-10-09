@@ -162,6 +162,18 @@ class ImageSearchTests(unittest.TestCase):
             self.assertIsNone(detail.report_path)
 
     def test_fetch_question_image_detail_rejects_invalid_bbox(self) -> None:
+        self._assert_invalid_bbox_rejected("not-json")
+
+    def test_fetch_question_image_detail_rejects_empty_bbox(self) -> None:
+        self._assert_invalid_bbox_rejected("[]")
+
+    def test_fetch_question_image_detail_rejects_short_bbox(self) -> None:
+        self._assert_invalid_bbox_rejected("[1, 2]")
+
+    def test_fetch_question_image_detail_rejects_long_bbox(self) -> None:
+        self._assert_invalid_bbox_rejected("[1, 2, 3, 4, 5]")
+
+    def _assert_invalid_bbox_rejected(self, bbox_json: str) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store, image_id = _create_store_with_one_image(root)
@@ -169,7 +181,7 @@ class ImageSearchTests(unittest.TestCase):
             try:
                 connection.execute(
                     "UPDATE question_images SET bbox_json = ? WHERE id = ?",
-                    ("not-json", image_id),
+                    (bbox_json, image_id),
                 )
                 connection.commit()
             finally:

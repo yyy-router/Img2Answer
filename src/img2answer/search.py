@@ -83,7 +83,7 @@ def fetch_question_image_detail(sqlite_store: SQLiteStore, image_id: str) -> Que
         bbox = json.loads(row["bbox_json"])
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid bbox_json for image: {image_id}") from exc
-    if not isinstance(bbox, list) or not all(isinstance(value, int) for value in bbox):
+    if not isinstance(bbox, list) or len(bbox) != 4 or not all(isinstance(value, int) for value in bbox):
         raise ValueError(f"invalid bbox_json for image: {image_id}")
 
     return QuestionImageDetail(
