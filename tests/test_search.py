@@ -1,10 +1,12 @@
+import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 
 from PIL import Image
 
-from img2answer.search import search_similar_images
+from img2answer.search import fetch_question_image_detail, search_similar_images
 from img2answer.store import SQLiteStore
 from img2answer.vector_store import ImageSearchMatch, PillowHashEmbeddingModel
 
@@ -88,6 +90,12 @@ class ImageSearchTests(unittest.TestCase):
             self.assertEqual(results[0].distance, 0.125)
             self.assertIsNotNone(results[0].record)
             self.assertEqual(results[0].record["id"], image_id)
+            self.assertIsNotNone(results[0].detail)
+            self.assertEqual(results[0].detail["image_id"], image_id)
+            self.assertEqual(results[0].detail["document_id"], "sample")
+            self.assertEqual(results[0].detail["section"], "graphic_reasoning")
+            self.assertEqual(results[0].detail["bbox"], json.loads(results[0].record["bbox_json"]))
+            self.assertEqual(results[0].detail["report_path"], str(root / "reports" / "sample-report.json"))
 
     def test_search_similar_images_keeps_missing_sqlite_record_visible(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -118,6 +126,57 @@ class ImageSearchTests(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].image_id, "missing")
             self.assertIsNone(results[0].record)
+            self.assertIsNone(results[0].detail)
+
+    def test_fetch_question_image_detail_returns_report_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store, image_id = _create_store_with_one_image(root)
+
+            detail = fetch_question_image_detail(store, image_id)
+
+            self.assertIsNotNone(detail)
+            self.assertEqual(detail.image_id, image_id)
+            self.assertEqual(detail.document_id, "sample")
+            self.assertEqual(detail.section, "graphic_reasoning")
+            self.assertEqual(detail.image_role, "crop_candidate")
+            self.assertEqual(detail.bbox, json.loads(store.fetch_question_image(image_id)["bbox_json"]))
+            self.assertGreater(detail.width, 0)
+            self.assertGreater(detail.height, 0)
+            self.assertEqual(detail.report_path, str(root / "reports" / "sample-report.json"))
+
+    def test_fetch_question_image_detail_allows_missing_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store, image_id = _create_store_with_one_image(root)
+            connection = sqlite3.connect(store.path)
+            try:
+                connection.execute("DELETE FROM process_reports")
+                connection.commit()
+            finally:
+                connection.close()
+
+            detail = fetch_question_image_detail(store, image_id)
+
+            self.assertIsNotNone(detail)
+            self.assertIsNone(detail.report_path)
+
+    def test_fetch_question_image_detail_rejects_invalid_bbox(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store, image_id = _create_store_with_one_image(root)
+            connection = sqlite3.connect(store.path)
+            try:
+                connection.execute(
+                    "UPDATE question_images SET bbox_json = ? WHERE id = ?",
+                    ("not-json", image_id),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with self.assertRaisesRegex(ValueError, "invalid bbox_json"):
+                fetch_question_image_detail(store, image_id)
 
     def test_search_similar_images_rejects_missing_query_image_before_embedding(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

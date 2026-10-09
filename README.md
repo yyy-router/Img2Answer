@@ -166,8 +166,16 @@ $env:PYTHONPATH = "src"
 - ChromaDB 距离
 - Chroma metadata
 - SQLite 图片记录
+- 面向人工核查的详情字段 `detail`：
+  - 来源文档 ID
+  - 题型 section
+  - 裁剪图路径
+  - 原始渲染页路径
+  - 裁剪框 bbox
+  - 图片宽高
+  - 处理报告路径
 
-如果 ChromaDB 中存在向量但 SQLite 已无对应图片记录，结果中的 `record` 会是 `null`，用于暴露本地数据一致性问题。
+如果 ChromaDB 中存在向量但 SQLite 已无对应图片记录，结果中的 `record` 和 `detail` 会是 `null`，用于暴露本地数据一致性问题。
 
 ## 运行测试
 
@@ -191,6 +199,7 @@ $env:PYTHONPATH = "src"
 - 真实 ChromaDB 持久化
 - 图片相似检索
 - 检索结果 SQLite 回查
+- 检索结果详情回查
 - CLI 向量入库调用链
 - CLI 图片检索调用链
 
