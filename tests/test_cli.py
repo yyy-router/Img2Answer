@@ -280,6 +280,10 @@ documents:
             self.assertEqual(len(payload["results"]), 1)
             self.assertEqual(payload["results"][0]["image_id"], image["id"])
             self.assertEqual(payload["results"][0]["record"]["id"], image["id"])
+            self.assertEqual(payload["results"][0]["detail"]["image_id"], image["id"])
+            self.assertEqual(payload["results"][0]["detail"]["document_id"], "sample")
+            self.assertEqual(payload["results"][0]["detail"]["section"], "graphic_reasoning")
+            self.assertEqual(payload["results"][0]["detail"]["report_path"], str(output_dir / "reports" / "sample-report.json"))
 
 
 if __name__ == "__main__":

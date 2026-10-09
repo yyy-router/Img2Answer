@@ -181,6 +181,29 @@ class SQLiteStore:
                 (image_id,),
             ).fetchone()
 
+    def fetch_question_image_detail(self, image_id: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return connection.execute(
+                """
+                SELECT
+                    question_images.id AS image_id,
+                    question_images.document_id,
+                    question_images.section,
+                    question_images.image_role,
+                    question_images.source_page_path,
+                    question_images.output_path,
+                    question_images.bbox_json,
+                    question_images.width,
+                    question_images.height,
+                    process_reports.report_path
+                FROM question_images
+                LEFT JOIN process_reports
+                    ON process_reports.document_id = question_images.document_id
+                WHERE question_images.id = ?
+                """,
+                (image_id,),
+            ).fetchone()
+
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path)
