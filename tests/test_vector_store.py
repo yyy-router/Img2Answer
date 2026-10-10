@@ -1,13 +1,17 @@
 from pathlib import Path
+import importlib
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
 from img2answer.vector_store import (
     ChromaImageVectorStore,
     EmbeddedImage,
+    OpenCLIPImageEmbeddingModel,
     PillowHashEmbeddingModel,
+    create_embedding_model,
     embed_question_images,
 )
 
@@ -26,6 +30,25 @@ class RecordingVectorStore:
 
 
 class VectorStoreTests(unittest.TestCase):
+    def test_create_embedding_model_defaults_to_pillow_hash(self) -> None:
+        model = create_embedding_model()
+
+        self.assertIsInstance(model, PillowHashEmbeddingModel)
+
+    def test_create_embedding_model_rejects_unknown_model(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported embedding model"):
+            create_embedding_model("unknown")
+
+    def test_openclip_model_reports_missing_dependencies(self) -> None:
+        def raise_openclip_import(name: str):
+            if name == "open_clip":
+                raise ImportError("missing open_clip")
+            return importlib.import_module(name)
+
+        with patch("img2answer.vector_store.importlib.import_module", side_effect=raise_openclip_import):
+            with self.assertRaisesRegex(RuntimeError, "OpenCLIP dependencies are required"):
+                OpenCLIPImageEmbeddingModel()
+
     def test_pillow_hash_embedding_is_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             image_path = Path(directory) / "sample.png"

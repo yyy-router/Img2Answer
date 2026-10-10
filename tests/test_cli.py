@@ -49,6 +49,11 @@ class RecordingSearchChromaImageVectorStore:
         return self.matches[:top_k]
 
 
+class ConstantEmbeddingModel:
+    def embed_image(self, image_path: str | Path) -> list[float]:
+        return [0.1, 0.2, 0.3]
+
+
 class CliTests(unittest.TestCase):
     def test_cli_writes_report_and_sqlite_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -210,6 +215,51 @@ documents:
             self.assertEqual(len(vector_store.records), 1)
             self.assertEqual(vector_store.records[0].metadata["document_id"], "sample")
 
+    def test_cli_passes_embedding_model_to_vector_ingestion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf_path = root / "sample.pdf"
+            create_sample_pdf(pdf_path)
+            config_path = root / "sections.yml"
+            output_dir = root / "processed"
+            config_path.write_text(
+                f"""
+documents:
+  sample:
+    path: {pdf_path.as_posix()}
+    sections:
+      graphic_reasoning:
+        page_from: 1
+        page_to: 1
+""".strip(),
+                encoding="utf-8",
+            )
+            created_models = []
+
+            def create_model(name: str) -> ConstantEmbeddingModel:
+                created_models.append(name)
+                return ConstantEmbeddingModel()
+
+            RecordingChromaImageVectorStore.instances.clear()
+            with patch.object(cli_module, "ChromaImageVectorStore", RecordingChromaImageVectorStore):
+                with patch.object(cli_module, "create_embedding_model", side_effect=create_model):
+                    exit_code = main(
+                        [
+                            "--config",
+                            str(config_path),
+                            "--output-dir",
+                            str(output_dir),
+                            "--dpi",
+                            "96",
+                            "--embed-images",
+                            "--embedding-model",
+                            "openclip",
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(created_models, ["openclip"])
+
     def test_cli_search_image_outputs_json_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -257,26 +307,36 @@ documents:
                 )
             ]
             stdout = io.StringIO()
+            created_models = []
+
+            def create_model(name: str) -> ConstantEmbeddingModel:
+                created_models.append(name)
+                return ConstantEmbeddingModel()
 
             with patch.object(cli_module, "ChromaImageVectorStore", RecordingSearchChromaImageVectorStore):
-                with redirect_stdout(stdout):
-                    exit_code = main(
-                        [
-                            "search-image",
-                            "--image",
-                            image["output_path"],
-                            "--database",
-                            str(output_dir / "img2answer.sqlite3"),
-                            "--chroma-dir",
-                            str(output_dir / "chroma"),
-                            "--top-k",
-                            "1",
-                        ]
-                    )
+                with patch.object(cli_module, "create_embedding_model", side_effect=create_model):
+                    with redirect_stdout(stdout):
+                        exit_code = main(
+                            [
+                                "search-image",
+                                "--image",
+                                image["output_path"],
+                                "--database",
+                                str(output_dir / "img2answer.sqlite3"),
+                                "--chroma-dir",
+                                str(output_dir / "chroma"),
+                                "--top-k",
+                                "1",
+                                "--embedding-model",
+                                "openclip",
+                            ]
+                        )
 
             self.assertEqual(exit_code, 0)
+            self.assertEqual(created_models, ["openclip"])
             payload = json.loads(stdout.getvalue())
             self.assertEqual(payload["top_k"], 1)
+            self.assertEqual(payload["embedding_model"], "openclip")
             self.assertEqual(len(payload["results"]), 1)
             self.assertEqual(payload["results"][0]["image_id"], image["id"])
             self.assertEqual(payload["results"][0]["record"]["id"], image["id"])

@@ -23,6 +23,9 @@ Img2Answer 是一个本地优先的 Python 项目，用于把本地 PDF 题库�
   - 使用图片 ID 作为向量记录 ID
   - metadata 保留 SQLite 回查字段
   - 默认向量库目录为 `<output-dir>/chroma`
+- 支持选择图片 embedding 模型：
+  - 默认 `pillow-hash`，用于轻量 POC 和 CI
+  - 可选 `openclip`，用于本地真实视觉 embedding
 - 支持通过本地查询图片检索相似裁剪候选图：
   - 查询 ChromaDB Top K 相似向量
   - 通过 `image_id` 回查 SQLite 图片记录
@@ -149,6 +152,26 @@ $env:PYTHONPATH = "src"
 
 当前 embedding 模型是轻量、确定性的本地 POC 实现，用于验证数据链路；后续可以替换为更适合图形题检索的视觉模型。
 
+可以通过 `--embedding-model` 指定模型：
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.conda\python.exe -m img2answer.cli --config configs\sample.sections.example.yml --output-dir data\processed --dpi 300 --embed-images --embedding-model pillow-hash
+```
+
+OpenCLIP 是可选本地模型。使用前需要额外安装可选依赖：
+
+```powershell
+.\.conda\python.exe -m pip install -e ".[openclip]"
+```
+
+然后用同一个模型完成入库：
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.conda\python.exe -m img2answer.cli --config configs\sample.sections.example.yml --output-dir data\processed --dpi 300 --embed-images --embedding-model openclip
+```
+
 ## 运行图片相似检索
 
 完成图片向量入库后，可以使用 `search-image` 子命令查询相似图片：
@@ -156,6 +179,13 @@ $env:PYTHONPATH = "src"
 ```powershell
 $env:PYTHONPATH = "src"
 .\.conda\python.exe -m img2answer.cli search-image --image data\query.png --database data\processed\img2answer.sqlite3 --chroma-dir data\processed\chroma --top-k 5
+```
+
+如果入库时使用了 OpenCLIP，检索时也应使用同一个模型：
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.conda\python.exe -m img2answer.cli search-image --image data\query.png --database data\processed\img2answer.sqlite3 --chroma-dir data\processed\chroma --top-k 5 --embedding-model openclip
 ```
 
 输出为 JSON，包含：
@@ -195,6 +225,7 @@ $env:PYTHONPATH = "src"
 - SQLite 元数据持久化
 - 重跑时元数据替换
 - 图片 embedding 生成
+- embedding 模型选择
 - 图片向量入库 metadata
 - 真实 ChromaDB 持久化
 - 图片相似检索
