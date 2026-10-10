@@ -15,6 +15,9 @@ from .store import SQLiteStore
 from .vector_store import ChromaImageVectorStore, create_embedding_model, embed_question_images
 
 
+DEFAULT_CHROMA_COLLECTION = "question_images"
+
+
 def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
     if args_list and args_list[0] == "search-image":
@@ -39,8 +42,11 @@ def process_documents_main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--chroma-collection",
-        default="question_images",
-        help="ChromaDB collection name for image vectors.",
+        default=None,
+        help=(
+            "ChromaDB collection name for image vectors. Defaults to question_images for pillow-hash "
+            "and question_images_openclip for openclip."
+        ),
     )
     parser.add_argument(
         "--embedding-model",
@@ -59,7 +65,8 @@ def process_documents_main(argv: list[str]) -> int:
     embedding_model = None
     if args.embed_images:
         chroma_dir = Path(args.chroma_dir) if args.chroma_dir else output_root / "chroma"
-        vector_store = ChromaImageVectorStore(chroma_dir, collection_name=args.chroma_collection)
+        chroma_collection = resolve_chroma_collection(args.chroma_collection, args.embedding_model)
+        vector_store = ChromaImageVectorStore(chroma_dir, collection_name=chroma_collection)
         embedding_model = create_embedding_model(args.embedding_model)
 
     for document_config in project_config.documents:
@@ -110,6 +117,7 @@ def process_documents_main(argv: list[str]) -> int:
                 image_rows,
                 vector_store=vector_store,
                 embedding_model=embedding_model,
+                embedding_model_name=args.embedding_model,
             )
             print(
                 "image_vectors "
@@ -136,8 +144,11 @@ def search_image_main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--chroma-collection",
-        default="question_images",
-        help="ChromaDB collection name for image vectors.",
+        default=None,
+        help=(
+            "ChromaDB collection name for image vectors. Defaults to question_images for pillow-hash "
+            "and question_images_openclip for openclip."
+        ),
     )
     parser.add_argument("--top-k", type=int, default=5, help="Number of similar images to return.")
     parser.add_argument(
@@ -148,7 +159,8 @@ def search_image_main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     sqlite_store = SQLiteStore(args.database)
-    vector_store = ChromaImageVectorStore(args.chroma_dir, collection_name=args.chroma_collection)
+    chroma_collection = resolve_chroma_collection(args.chroma_collection, args.embedding_model)
+    vector_store = ChromaImageVectorStore(args.chroma_dir, collection_name=chroma_collection)
     results = search_similar_images(
         args.image,
         sqlite_store=sqlite_store,
@@ -169,6 +181,15 @@ def search_image_main(argv: list[str]) -> int:
         )
     )
     return 0
+
+
+def resolve_chroma_collection(collection_name: str | None, embedding_model_name: str) -> str:
+    if collection_name:
+        return collection_name
+    normalized_model = embedding_model_name.strip().lower()
+    if normalized_model == "pillow-hash":
+        return DEFAULT_CHROMA_COLLECTION
+    return f"{DEFAULT_CHROMA_COLLECTION}_{normalized_model.replace('-', '_')}"
 
 
 if __name__ == "__main__":

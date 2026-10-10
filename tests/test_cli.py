@@ -22,11 +22,11 @@ class RecordingChromaImageVectorStore:
         self.persist_dir = Path(persist_dir)
         self.collection_name = collection_name
         self.records: list[EmbeddedImage] = []
-        self.deleted_document_ids: list[str] = []
+        self.deleted_documents: list[tuple[str, str | None]] = []
         self.__class__.instances.append(self)
 
-    def delete_document_images(self, document_id: str) -> None:
-        self.deleted_document_ids.append(document_id)
+    def delete_document_images(self, document_id: str, embedding_model_name: str | None = None) -> None:
+        self.deleted_documents.append((document_id, embedding_model_name))
 
     def upsert_images(self, records: list[EmbeddedImage]) -> None:
         self.records.extend(records)
@@ -34,12 +34,14 @@ class RecordingChromaImageVectorStore:
 
 class RecordingSearchChromaImageVectorStore:
     matches: list[ImageSearchMatch] = []
+    instances: list["RecordingSearchChromaImageVectorStore"] = []
 
     def __init__(self, persist_dir: str | Path, collection_name: str = "question_images"):
         self.persist_dir = Path(persist_dir)
         self.collection_name = collection_name
+        self.__class__.instances.append(self)
 
-    def delete_document_images(self, document_id: str) -> None:
+    def delete_document_images(self, document_id: str, embedding_model_name: str | None = None) -> None:
         raise AssertionError("search CLI should not delete vectors")
 
     def upsert_images(self, records: list[EmbeddedImage]) -> None:
@@ -211,9 +213,10 @@ documents:
             vector_store = RecordingChromaImageVectorStore.instances[0]
             self.assertEqual(vector_store.persist_dir, output_dir / "chroma")
             self.assertEqual(vector_store.collection_name, "question_images")
-            self.assertEqual(vector_store.deleted_document_ids, ["sample"])
+            self.assertEqual(vector_store.deleted_documents, [("sample", "pillow-hash")])
             self.assertEqual(len(vector_store.records), 1)
             self.assertEqual(vector_store.records[0].metadata["document_id"], "sample")
+            self.assertEqual(vector_store.records[0].metadata["embedding_model"], "pillow-hash")
 
     def test_cli_passes_embedding_model_to_vector_ingestion(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -259,6 +262,9 @@ documents:
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(created_models, ["openclip"])
+            self.assertEqual(len(RecordingChromaImageVectorStore.instances), 1)
+            self.assertEqual(RecordingChromaImageVectorStore.instances[0].collection_name, "question_images_openclip")
+            self.assertEqual(RecordingChromaImageVectorStore.instances[0].deleted_documents, [("sample", "openclip")])
 
     def test_cli_search_image_outputs_json_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -313,6 +319,7 @@ documents:
                 created_models.append(name)
                 return ConstantEmbeddingModel()
 
+            RecordingSearchChromaImageVectorStore.instances.clear()
             with patch.object(cli_module, "ChromaImageVectorStore", RecordingSearchChromaImageVectorStore):
                 with patch.object(cli_module, "create_embedding_model", side_effect=create_model):
                     with redirect_stdout(stdout):
@@ -334,6 +341,7 @@ documents:
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(created_models, ["openclip"])
+            self.assertEqual(RecordingSearchChromaImageVectorStore.instances[-1].collection_name, "question_images_openclip")
             payload = json.loads(stdout.getvalue())
             self.assertEqual(payload["top_k"], 1)
             self.assertEqual(payload["embedding_model"], "openclip")

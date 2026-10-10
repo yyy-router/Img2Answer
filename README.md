@@ -143,6 +143,13 @@ $env:PYTHONPATH = "src"
 <output-dir>/chroma
 ```
 
+默认 collection 会按 embedding 模型隔离：
+
+```text
+pillow-hash -> question_images
+openclip -> question_images_openclip
+```
+
 也可以显式指定：
 
 ```powershell
@@ -172,6 +179,8 @@ $env:PYTHONPATH = "src"
 .\.conda\python.exe -m img2answer.cli --config configs\sample.sections.example.yml --output-dir data\processed --dpi 300 --embed-images --embedding-model openclip
 ```
 
+同一个 ChromaDB collection 应只保存同一种 embedding 维度。通常不要把 `pillow-hash` 和 `openclip` 手动写入同一个 collection；如果不传 `--chroma-collection`，CLI 会自动使用各自默认 collection。
+
 ## 运行图片相似检索
 
 完成图片向量入库后，可以使用 `search-image` 子命令查询相似图片：
@@ -187,6 +196,8 @@ $env:PYTHONPATH = "src"
 $env:PYTHONPATH = "src"
 .\.conda\python.exe -m img2answer.cli search-image --image data\query.png --database data\processed\img2answer.sqlite3 --chroma-dir data\processed\chroma --top-k 5 --embedding-model openclip
 ```
+
+如果入库时没有显式指定 `--chroma-collection`，检索时也可以省略它，CLI 会按 `--embedding-model` 选择对应默认 collection。
 
 输出为 JSON，包含：
 

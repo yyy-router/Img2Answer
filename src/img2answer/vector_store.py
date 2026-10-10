@@ -14,7 +14,7 @@ class ImageEmbeddingModel(Protocol):
 
 
 class ImageVectorStore(Protocol):
-    def delete_document_images(self, document_id: str) -> None:
+    def delete_document_images(self, document_id: str, embedding_model_name: str | None = None) -> None:
         """Remove image vectors for one document."""
 
     def upsert_images(self, records: Sequence["EmbeddedImage"]) -> None:
@@ -121,8 +121,18 @@ class ChromaImageVectorStore:
         self.client = chromadb.PersistentClient(path=str(self.persist_dir))
         self.collection = self.client.get_or_create_collection(name=collection_name)
 
-    def delete_document_images(self, document_id: str) -> None:
-        self.collection.delete(where={"document_id": document_id})
+    def delete_document_images(self, document_id: str, embedding_model_name: str | None = None) -> None:
+        if embedding_model_name is None:
+            self.collection.delete(where={"document_id": document_id})
+            return
+        self.collection.delete(
+            where={
+                "$and": [
+                    {"document_id": document_id},
+                    {"embedding_model": embedding_model_name},
+                ]
+            }
+        )
 
     def upsert_images(self, records: Sequence[EmbeddedImage]) -> None:
         if not records:
@@ -168,10 +178,11 @@ def embed_question_images(
     *,
     vector_store: ImageVectorStore,
     embedding_model: ImageEmbeddingModel,
+    embedding_model_name: str = "pillow-hash",
 ) -> ImageEmbeddingResult:
     embedded_records: list[EmbeddedImage] = []
     skipped_missing_files = 0
-    vector_store.delete_document_images(document_id)
+    vector_store.delete_document_images(document_id, embedding_model_name=embedding_model_name)
 
     for row in question_images:
         image_path = Path(_row_value(row, "output_path"))
@@ -194,6 +205,7 @@ def embed_question_images(
                     "section": str(_row_value(row, "section")),
                     "image_role": str(_row_value(row, "image_role")),
                     "output_path": str(image_path),
+                    "embedding_model": embedding_model_name,
                 },
                 document=str(image_path),
             )
