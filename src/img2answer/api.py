@@ -4,14 +4,16 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
-import shutil
 import sqlite3
 import tempfile
-from typing import Callable
+from threading import Lock
+from typing import BinaryIO, Callable
 
 from dotenv import dotenv_values
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from PIL import Image
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .cli import resolve_chroma_collection
 from .search import fetch_question_image_detail, search_similar_images
@@ -29,10 +31,13 @@ class ApiSettings:
     chroma_collection: str | None = None
     embedding_model: str = "pillow-hash"
     top_k: int = 5
+    max_upload_bytes: int = 10 * 1024 * 1024
 
     def __post_init__(self) -> None:
         if self.top_k < 1:
             raise ValueError("IMG2ANSWER_TOP_K must be greater than 0")
+        if self.max_upload_bytes < 1:
+            raise ValueError("IMG2ANSWER_MAX_UPLOAD_BYTES must be greater than 0")
         if self.embedding_model not in {"pillow-hash", "openclip"}:
             raise ValueError("IMG2ANSWER_EMBEDDING_MODEL must be pillow-hash or openclip")
 
@@ -47,12 +52,62 @@ class ApiSettings:
             chroma_collection=values.get("IMG2ANSWER_CHROMA_COLLECTION") or None,
             embedding_model=values.get("IMG2ANSWER_EMBEDDING_MODEL", "pillow-hash"),
             top_k=int(values.get("IMG2ANSWER_TOP_K", "5")),
+            max_upload_bytes=int(values.get("IMG2ANSWER_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))),
         )
 
 
 StoreFactory = Callable[[str | Path], SQLiteStore]
 VectorStoreFactory = Callable[..., ChromaImageVectorStore]
 EmbeddingModelFactory = Callable[[str], ImageEmbeddingModel]
+
+
+class UploadRequestLimitMiddleware:
+    def __init__(self, app: ASGIApp, max_body_bytes: int):
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] != "POST":
+            await self.app(scope, receive, send)
+            return
+
+        rejection = JSONResponse(status_code=413, content={"detail": "Request body exceeds configured size limit"})
+        for name, value in scope["headers"]:
+            if name == b"content-length":
+                try:
+                    declared_size = int(value)
+                except ValueError:
+                    continue
+                if declared_size > self.max_body_bytes:
+                    await rejection(scope, receive, send)
+                    return
+
+        # Bound the body before the multipart parser can spool any files to disk.
+        buffered_body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            if len(buffered_body) + len(chunk) > self.max_body_bytes:
+                await rejection(scope, receive, send)
+                return
+            buffered_body.extend(chunk)
+            if not message.get("more_body", False):
+                break
+
+        body = bytes(buffered_body)
+        buffered_body.clear()
+        replayed = False
+
+        async def replay_receive() -> Message:
+            nonlocal replayed
+            if replayed:
+                return await receive()
+            replayed = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self.app(scope, replay_receive, send)
 
 
 def create_app(
@@ -67,6 +122,12 @@ def create_app(
     app.state.store_factory = store_factory
     app.state.vector_store_factory = vector_store_factory
     app.state.embedding_model_factory = embedding_model_factory
+    app.state.embedding_model = None
+    app.state.embedding_model_lock = Lock()
+    app.add_middleware(
+        UploadRequestLimitMiddleware,
+        max_body_bytes=app.state.settings.max_upload_bytes + 64 * 1024,
+    )
 
     @app.post("/search/image")
     def search_image(
@@ -85,7 +146,7 @@ def create_app(
             with tempfile.TemporaryDirectory(prefix="img2answer-query-") as directory:
                 image_path = Path(directory) / "query-image"
                 with image_path.open("wb") as destination:
-                    shutil.copyfileobj(file.file, destination, length=1024 * 1024)
+                    _copy_uploaded_image(file.file, destination, max_bytes=config.max_upload_bytes)
                 _validate_uploaded_image(image_path)
 
                 sqlite_store = _create_sqlite_store(request.app.state.store_factory, config.database)
@@ -93,7 +154,7 @@ def create_app(
                     config.chroma_dir,
                     collection_name=collection_name,
                 )
-                embedding_model = request.app.state.embedding_model_factory(config.embedding_model)
+                embedding_model = _get_embedding_model(request.app)
                 results = search_similar_images(
                     image_path,
                     sqlite_store=sqlite_store,
@@ -128,6 +189,22 @@ def create_app(
         return detail.__dict__
 
     return app
+
+
+def _get_embedding_model(app: FastAPI) -> ImageEmbeddingModel:
+    with app.state.embedding_model_lock:
+        if app.state.embedding_model is None:
+            app.state.embedding_model = app.state.embedding_model_factory(app.state.settings.embedding_model)
+        return app.state.embedding_model
+
+
+def _copy_uploaded_image(source: BinaryIO, destination: BinaryIO, *, max_bytes: int) -> None:
+    copied_bytes = 0
+    while chunk := source.read(min(64 * 1024, max_bytes - copied_bytes + 1)):
+        copied_bytes += len(chunk)
+        if copied_bytes > max_bytes:
+            raise HTTPException(status_code=413, detail="Uploaded image exceeds configured size limit")
+        destination.write(chunk)
 
 
 def _validate_uploaded_image(image_path: Path) -> None:

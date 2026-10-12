@@ -1,7 +1,9 @@
 import io
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import tempfile
+from threading import Barrier
 import unittest
 from unittest.mock import Mock, patch
 
@@ -76,6 +78,24 @@ class ApiSettingsTests(unittest.TestCase):
         self.assertIsNone(settings.chroma_collection)
         self.assertEqual(settings.embedding_model, "pillow-hash")
         self.assertEqual(settings.top_k, 5)
+        self.assertEqual(settings.max_upload_bytes, 10 * 1024 * 1024)
+
+    def test_upload_limit_configuration_from_file_and_environment(self) -> None:
+        (self.root / ".env").write_text("IMG2ANSWER_MAX_UPLOAD_BYTES=2048\n", encoding="utf-8")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(ApiSettings.from_env().max_upload_bytes, 2048)
+        with patch.dict(os.environ, {"IMG2ANSWER_MAX_UPLOAD_BYTES": "4096"}, clear=True):
+            self.assertEqual(ApiSettings.from_env().max_upload_bytes, 4096)
+
+    def test_rejects_invalid_upload_limit_configuration(self) -> None:
+        for value in ("0", "-1", "abc"):
+            with self.subTest(value=value), patch.dict(os.environ, {
+                "IMG2ANSWER_MAX_UPLOAD_BYTES": value,
+            }, clear=True):
+                with self.assertRaises(ValueError):
+                    ApiSettings.from_env()
+        with self.assertRaises(ValueError):
+            ApiSettings(max_upload_bytes=0)
 
     def test_create_app_reads_dotenv_without_changing_process_environment(self) -> None:
         (self.root / ".env").write_text(
@@ -199,6 +219,94 @@ class ApiTests(unittest.TestCase):
     def setUp(self) -> None:
         RecordingSearchVectorStore.matches = []
         RecordingSearchVectorStore.instances.clear()
+
+    def test_model_is_loaded_once_for_sequential_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "images.sqlite3")
+            store.initialize()
+            model = RecordingEmbeddingModel()
+            factory = Mock(return_value=model)
+            client = TestClient(create_app(
+                settings=ApiSettings(database=store.path, embedding_model="openclip"),
+                vector_store_factory=RecordingSearchVectorStore,
+                embedding_model_factory=factory,
+            ))
+            factory.assert_not_called()
+
+            for _ in range(2):
+                response = client.post(
+                    "/search/image", files={"file": ("query.png", _image_bytes(), "image/png")},
+                )
+                self.assertEqual(response.status_code, 200)
+
+            factory.assert_called_once_with("openclip")
+            self.assertEqual(len(model.paths), 2)
+            self.assertTrue(all(not path.exists() for path in model.paths))
+
+    def test_model_is_loaded_once_for_concurrent_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "images.sqlite3")
+            store.initialize()
+            factory = Mock(side_effect=lambda name: RecordingEmbeddingModel())
+            app = create_app(
+                settings=ApiSettings(database=store.path, embedding_model="openclip"),
+                vector_store_factory=RecordingSearchVectorStore,
+                embedding_model_factory=factory,
+            )
+            barrier = Barrier(4, timeout=10)
+            with TestClient(app) as client:
+                def search(_):
+                    barrier.wait()
+                    return client.post(
+                        "/search/image", files={"file": ("query.png", _image_bytes(), "image/png")},
+                    ).status_code
+
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    statuses = list(executor.map(search, range(4)))
+
+            self.assertEqual(statuses, [200] * 4)
+            factory.assert_called_once_with("openclip")
+
+    def test_model_initialization_failure_can_be_retried(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "images.sqlite3")
+            store.initialize()
+            factory = Mock(side_effect=[RuntimeError("load failed"), RecordingEmbeddingModel()])
+            client = TestClient(create_app(
+                settings=ApiSettings(database=store.path, embedding_model="openclip"),
+                vector_store_factory=RecordingSearchVectorStore,
+                embedding_model_factory=factory,
+            ))
+            with self.assertLogs("img2answer.api", level="ERROR"):
+                response = client.post(
+                    "/search/image", files={"file": ("query.png", _image_bytes(), "image/png")},
+                )
+            self.assertEqual(response.status_code, 500)
+            for _ in range(2):
+                response = client.post(
+                    "/search/image", files={"file": ("query.png", _image_bytes(), "image/png")},
+                )
+                self.assertEqual(response.status_code, 200)
+            self.assertEqual(factory.call_count, 2)
+
+    def test_model_cache_is_not_shared_between_apps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "images.sqlite3")
+            store.initialize()
+            models = [RecordingEmbeddingModel(), RecordingEmbeddingModel()]
+            factory = Mock(side_effect=models)
+            for _ in range(2):
+                client = TestClient(create_app(
+                    settings=ApiSettings(database=store.path, embedding_model="openclip"),
+                    vector_store_factory=RecordingSearchVectorStore,
+                    embedding_model_factory=factory,
+                ))
+                response = client.post(
+                    "/search/image", files={"file": ("query.png", _image_bytes(), "image/png")},
+                )
+                self.assertEqual(response.status_code, 200)
+            self.assertEqual(factory.call_count, 2)
+            self.assertEqual([len(model.paths) for model in models], [1, 1])
 
     def test_search_image_returns_results_and_cleans_upload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
