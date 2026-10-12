@@ -30,13 +30,16 @@ Img2Answer 是一个本地优先的 Python 项目，用于把本地 PDF 题库�
   - 查询 ChromaDB Top K 相似向量
   - 通过 `image_id` 回查 SQLite 图片记录
   - 输出结构化 JSON
+- 提供本地 HTTP API：
+  - 上传图片进行相似检索
+  - 图片详情回查接口
+  - 数据库、向量库和模型使用服务端配置
 - 提供 CLI 入口。
 - 使用生成的样本 PDF 做单元测试和集成测试，不依赖真实本地材料。
 
 ## 暂未实现
 
 - OCR
-- Web API 图片搜索接口
 - 文本搜索接口
 - Web UI
 - 完整题目解析
@@ -51,7 +54,11 @@ Img2Answer 是一个本地优先的 Python 项目，用于把本地 PDF 题库�
 data/
 .conda/
 docs/
+.env
+.env.*
 ```
+
+`.env.example` 是可提交的通用配置模板。
 
 不要提交：
 
@@ -218,6 +225,91 @@ $env:PYTHONPATH = "src"
 
 如果 ChromaDB 中存在向量但 SQLite 已无对应图片记录，结果中的 `record` 和 `detail` 会是 `null`，用于暴露本地数据一致性问题。
 
+## 运行本地 API
+
+API 是可选能力。使用前安装 API 依赖：
+
+```powershell
+.\.conda\python.exe -m pip install -e ".[vector,api]"
+```
+
+数据库、向量库和模型在项目根目录的 `.env` 中配置，客户端不传这些参数。应用启动时自动读取该文件，通用模板见 `.env.example`：
+
+```dotenv
+IMG2ANSWER_DATABASE=data/processed/img2answer.sqlite3
+IMG2ANSWER_CHROMA_DIR=data/processed/chroma
+IMG2ANSWER_CHROMA_COLLECTION=
+IMG2ANSWER_EMBEDDING_MODEL=pillow-hash
+IMG2ANSWER_TOP_K=5
+IMG2ANSWER_MAX_UPLOAD_BYTES=10485760
+```
+
+请将路径改为已完成入库的本地数据路径。从项目根目录启动服务，无需在启动命令中逐项设置配置：
+
+```powershell
+.\.conda\python.exe -m uvicorn img2answer.api:app --host 127.0.0.1 --port 8000
+```
+
+`.env` 和相对数据路径按启动时的工作目录读取，不会搜索父目录的配置。文件支持 UTF-8、注释和带引号的值，不进行变量插值。进程环境变量优先于 `.env`，未配置的字段使用默认值；文件不存在时也可以启动。修改配置后需要重启服务。实际 `.env` 被 Git 忽略，只提交通用模板。
+
+| 配置项 | 默认值 | 用途 |
+| --- | --- | --- |
+| `IMG2ANSWER_DATABASE` | `data/processed/img2answer.sqlite3` | SQLite 数据库路径 |
+| `IMG2ANSWER_CHROMA_DIR` | `data/processed/chroma` | ChromaDB 持久化目录 |
+| `IMG2ANSWER_CHROMA_COLLECTION` | 未设置 | 按模型选择默认 collection |
+| `IMG2ANSWER_EMBEDDING_MODEL` | `pillow-hash` | 图片 embedding 模型 |
+| `IMG2ANSWER_TOP_K` | `5` | 默认返回数量，必须大于 0 |
+| `IMG2ANSWER_MAX_UPLOAD_BYTES` | `10485760` | 图片大小上限，单位字节，默认 10 MiB，必须大于 0 |
+
+如果入库使用 OpenCLIP，先安装模型依赖：
+
+```powershell
+.\.conda\python.exe -m pip install -e ".[openclip]"
+```
+
+然后在 `.env` 中设置 `IMG2ANSWER_EMBEDDING_MODEL=openclip`。
+
+未指定 collection 时，`pillow-hash` 使用 `question_images`，`openclip` 使用 `question_images_openclip`。如果入库时指定了其他 collection，应通过 `IMG2ANSWER_CHROMA_COLLECTION` 配置相同名称。
+
+配置好 `.env` 后，也可以使用项目脚本启动：
+
+```powershell
+.\.conda\Scripts\img2answer-api.exe
+```
+
+图片相似检索接口接收 `multipart/form-data`，直接上传查询图片，无需单独调用上传接口：
+
+```http
+POST http://127.0.0.1:8000/search/image
+```
+
+请求表单字段：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `file` | 文件 | 是 | 查询图片 |
+| `top_k` | 正整数 | 否 | 返回结果数量；省略时使用服务端默认值 |
+
+数据库路径、向量库路径及模型由服务端配置，不属于请求参数。
+
+响应中的 `query_image` 是上传文件名，`results` 为检索结果。查询图片只用于本次检索，系统临时文件在成功或失败后都会清理；上传图片不会作为新题目写入数据库或向量库。结果继续包含用于本地核查的裁剪图、来源页和报告路径，目前没有图片下载接口。
+
+上传图片默认最多 10 MiB，请求体额外允许 64 KiB 的表单开销。服务在 multipart 解析前有界接收并检查实际请求体大小，复制图片时再次检查文件大小，超限返回 `413`；该检查不依赖客户端声明的 `Content-Length`。
+
+每个应用实例在首次有效检索时加载 embedding 模型，后续检索复用同一个模型，并发首次请求也只初始化一次。初始化失败时后续请求可重试；详情查询不加载模型。多个服务进程各自持有模型实例。
+
+图片详情回查接口只需要把检索结果中的 `image_id` 填入 URL：
+
+```http
+GET http://127.0.0.1:8000/images/{image_id}
+```
+
+接口定义见 `http://127.0.0.1:8000/docs`。
+
+缺少上传文件或 `top_k` 格式错误返回 `422`；空文件、无效图片或 `top_k < 1` 返回 `400`；超限上传返回 `413`；图片 ID 不存在返回 `404`；服务端数据库文件不可用返回 `503`；后端检索或读取失败返回 `500`，详细原因记录在服务端日志中。
+
+API 不负责生成图片向量；需要先使用 CLI 完成 PDF 处理和图片向量入库。
+
 ## 运行测试
 
 ```powershell
@@ -244,6 +336,13 @@ $env:PYTHONPATH = "src"
 - 检索结果详情回查
 - CLI 向量入库调用链
 - CLI 图片检索调用链
+- 本地 API 图片检索接口
+- 本地 API 图片详情回查接口
+- API 服务端配置隔离与上传临时文件清理
+- API `.env` 配置加载与进程环境变量优先级
+- API 上传大小限制、分块请求及拒绝请求的资源清理
+- API 模型复用、并发初始化和初始化失败重试
+- 图片上传检索与真实 ChromaDB 集成
 
 ## CI 门禁
 
@@ -253,7 +352,7 @@ CI 使用 Python 3.11，并执行：
 
 ```bash
 python -m pip install setuptools wheel
-python -m pip install -e ".[vector]" --no-build-isolation
+python -m pip install -e ".[vector,api]" --no-build-isolation
 python -c "import img2answer; print(img2answer.__version__)"
 python -m unittest discover -s tests -v
 ```
