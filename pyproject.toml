@@ -17,6 +17,12 @@ dependencies = [
 vector = [
   "chromadb>=0.5",
 ]
+api = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "python-multipart>=0.0.9",
+  "python-dotenv>=1",
+]
 openclip = [
   "open_clip_torch>=2.24",
   "torch>=2",
@@ -25,6 +31,7 @@ openclip = [
 
 [project.scripts]
 img2answer-poc = "img2answer.cli:main"
+img2answer-api = "img2answer.api:run"
 
 [tool.setuptools.packages.find]
 where = ["src"]

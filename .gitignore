@@ -9,3 +9,6 @@ __pycache__/
 *.log
 docs/
 *.egg-info/
+.env
+.env.*
+!.env.example
