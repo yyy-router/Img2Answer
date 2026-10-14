@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sys
 
-from .config import load_config
+from .config import SectionConfig, load_config
 from .graphic_crop import crop_pages
 from .ocr import AliyunOCRClient, OCRError, OCRSettings, recognize_page
 from .pdf_document import inspect_pdf, validate_section
@@ -90,11 +90,11 @@ def process_documents_main(argv: list[str]) -> int:
         all_candidates = []
         section_candidates = {}
         ocr_pages = [] if args.ocr else None
+        rendered_sections: list[tuple[SectionConfig, list[Path]]] = []
 
         for section in document_config.sections:
             validate_section(section, metadata.page_count)
             page_dir = output_root / "pages" / document_config.document_id / section.name
-            crop_dir = output_root / "crops" / document_config.document_id / section.name
 
             rendered_pages = render_section(metadata.path, section, page_dir, dpi=args.dpi)
             if ocr_client is not None and ocr_settings is not None:
@@ -116,6 +116,11 @@ def process_documents_main(argv: list[str]) -> int:
                         "block_count": ocr_result.block_count,
                         "needs_review": ocr_result.needs_review,
                     })
+            rendered_sections.append((section, rendered_pages))
+
+        # Keep existing crops intact until every section's render/OCR phase succeeds.
+        for section, rendered_pages in rendered_sections:
+            crop_dir = output_root / "crops" / document_config.document_id / section.name
             candidates = crop_pages(rendered_pages, crop_dir)
             all_candidates.extend(candidates)
             section_candidates[section.name] = candidates
