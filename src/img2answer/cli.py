@@ -5,8 +5,9 @@ import json
 from pathlib import Path
 import sys
 
-from .config import load_config
+from .config import SectionConfig, load_config
 from .graphic_crop import crop_pages
+from .ocr import AliyunOCRClient, OCRError, OCRSettings, recognize_page
 from .pdf_document import inspect_pdf, validate_section
 from .render_pages import render_section
 from .report import SectionReport, build_report, write_report
@@ -22,7 +23,15 @@ def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
     if args_list and args_list[0] == "search-image":
         return search_image_main(args_list[1:])
-    return process_documents_main(args_list)
+    try:
+        return process_documents_main(args_list)
+    except OCRError as exc:
+        print(
+            f"OCR 处理失败：{exc}。导入已停止；当前文档本次元数据未写入，"
+            "此前成功的文档、页面缓存及渲染文件不会回滚。",
+            file=sys.stderr,
+        )
+        return 1
 
 
 def process_documents_main(argv: list[str]) -> int:
@@ -54,9 +63,15 @@ def process_documents_main(argv: list[str]) -> int:
         help="Image embedding model to use when --embed-images is enabled: pillow-hash or openclip.",
     )
     parser.add_argument("--dpi", type=int, default=300, help="Render DPI.")
+    parser.add_argument("--ocr", action="store_true", help="使用阿里云 OCR 识别配置页段；会上传页面图片。")
+    parser.add_argument("--ocr-refresh", action="store_true", help="配合 --ocr 跳过缓存重新识别；可能增加费用。")
     args = parser.parse_args(argv)
+    if args.ocr_refresh and not args.ocr:
+        parser.error("--ocr-refresh 必须与 --ocr 一起使用")
 
     project_config = load_config(args.config)
+    ocr_settings = OCRSettings.from_env() if args.ocr else None
+    ocr_client = AliyunOCRClient(ocr_settings) if ocr_settings is not None else None
     output_root = Path(args.output_dir)
     database_path = Path(args.database) if args.database else output_root / "img2answer.sqlite3"
     store = SQLiteStore(database_path)
@@ -74,13 +89,38 @@ def process_documents_main(argv: list[str]) -> int:
         section_reports: list[SectionReport] = []
         all_candidates = []
         section_candidates = {}
+        ocr_pages = [] if args.ocr else None
+        rendered_sections: list[tuple[SectionConfig, list[Path]]] = []
 
         for section in document_config.sections:
             validate_section(section, metadata.page_count)
             page_dir = output_root / "pages" / document_config.document_id / section.name
-            crop_dir = output_root / "crops" / document_config.document_id / section.name
 
             rendered_pages = render_section(metadata.path, section, page_dir, dpi=args.dpi)
+            if ocr_client is not None and ocr_settings is not None:
+                for page_number, page_path in enumerate(rendered_pages, start=section.page_from):
+                    ocr_result = recognize_page(
+                        page_path,
+                        output_root / "ocr" / document_config.document_id / section.name / f"page-{page_number:04d}.json",
+                        client=ocr_client,
+                        min_confidence=ocr_settings.min_confidence,
+                        refresh=args.ocr_refresh,
+                    )
+                    ocr_pages.append({
+                        "section": section.name,
+                        "page_number": page_number,
+                        "source_page": str(page_path),
+                        "result_path": str(ocr_result.result_path),
+                        "status": ocr_result.status,
+                        "cache_hit": ocr_result.cache_hit,
+                        "block_count": ocr_result.block_count,
+                        "needs_review": ocr_result.needs_review,
+                    })
+            rendered_sections.append((section, rendered_pages))
+
+        # Keep existing crops intact until every section's render/OCR phase succeeds.
+        for section, rendered_pages in rendered_sections:
+            crop_dir = output_root / "crops" / document_config.document_id / section.name
             candidates = crop_pages(rendered_pages, crop_dir)
             all_candidates.extend(candidates)
             section_candidates[section.name] = candidates
@@ -99,6 +139,7 @@ def process_documents_main(argv: list[str]) -> int:
             metadata=metadata,
             sections=section_reports,
             crop_candidates=all_candidates,
+            ocr_pages=ocr_pages,
         )
         report_path = output_root / "reports" / f"{document_config.document_id}-report.json"
         write_report(report, report_path)

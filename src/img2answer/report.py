@@ -26,8 +26,9 @@ def build_report(
     crop_candidates: list[CropCandidate],
     warnings: list[str] | None = None,
     errors: list[str] | None = None,
+    ocr_pages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    return {
+    report = {
         "document_id": document_id,
         "source_path": str(metadata.path),
         "sha256": metadata.sha256,
@@ -46,6 +47,9 @@ def build_report(
         "warnings": warnings or [],
         "errors": errors or [],
     }
+    if ocr_pages is not None:
+        report["ocr_pages"] = ocr_pages
+    return report
 
 
 def write_report(report: dict[str, Any], output_path: str | Path) -> Path:
