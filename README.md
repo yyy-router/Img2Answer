@@ -15,6 +15,10 @@ Img2Answer 是一个本地优先的 Python 项目，用于把本地 PDF 题库�
 - 将配置页段渲染为 PNG 页面图片。
 - 从渲染页面生成简单的图形裁剪候选图。
 - 写入 JSON 处理报告。
+- 可选使用阿里云在线 OCR 识别指定页段：
+  - 后端从 `.env` 读取凭证，只有显式开启才上传页面图片
+  - 本地保存文字块、像素坐标和实际返回的置信度
+  - 重复运行复用有效缓存，低置信度或无文字结果标记为待核对
 - 将本地元数据持久化到 SQLite：
   - 来源文档
   - 裁剪候选图
@@ -39,7 +43,6 @@ Img2Answer 是一个本地优先的 Python 项目，用于把本地 PDF 题库�
 
 ## 暂未实现
 
-- OCR
 - 文本搜索接口
 - Web UI
 - 完整题目解析
@@ -134,6 +137,58 @@ data/processed/
 ```text
 <output-dir>/img2answer.sqlite3
 ```
+
+## 阿里云在线 OCR
+
+OCR 是可选的导入能力，使用阿里云 `RecognizeAdvanced` 全文识别高精版。PDF 先在本地渲染为 PNG，再使用官方 SDK 提交图片二进制，不需要公开图床。该接口不直接接收 PDF。[阿里云接口文档](https://help.aliyun.com/zh/ocr/developer-reference/api-ocr-api-2021-07-07-recognizeadvanced)
+
+从项目根目录安装可选依赖，仍使用项目内 conda 环境：
+
+```powershell
+.\.conda\python.exe -m pip install -e ".[ocr]" --no-build-isolation
+```
+
+在现有 `.env` 中补充以下配置，不要覆盖其他 API 配置。凭证只在本地填写，不提交到 Git，也不提供给前端：
+
+```dotenv
+ALIBABA_CLOUD_ACCESS_KEY_ID=
+ALIBABA_CLOUD_ACCESS_KEY_SECRET=
+IMG2ANSWER_OCR_CONNECT_TIMEOUT_SECONDS=5
+IMG2ANSWER_OCR_READ_TIMEOUT_SECONDS=30
+IMG2ANSWER_OCR_MIN_CONFIDENCE=80
+```
+
+需要先开通对应 OCR 服务，并为 RAM 用户配置所需调用权限。首版固定使用杭州 endpoint `ocr-api.cn-hangzhou.aliyuncs.com`，不支持任意第三方地址。[阿里云 SDK 说明](https://help.aliyun.com/zh/ocr/developer-reference/sdk-overview)
+
+配置含义：连接与读取超时必须为正整数秒；核对阈值是 0 至 100 的有限数值。只读取项目启动目录的 `.env`，进程环境变量优先，配置解析不修改进程环境，不进行变量插值。必须从项目根目录运行。
+
+使用页段配置选出需要识别的页面，然后显式开启：
+
+```powershell
+.\.conda\python.exe -m img2answer.cli --config configs\sample.sections.example.yml --output-dir data\processed --dpi 300 --ocr
+```
+
+`--ocr` 会将配置范围内的页面图片发送到阿里云，可能产生费用；请确认材料允许外传，并先选择少量页面验证。未指定该开关时，配置了密钥也不会请求云服务，现有图片搜索 API 不调用 OCR。OCR 可与 `--embed-images` 一起使用，但不改变现有裁剪或 embedding 规则。
+
+识别结果保存在：
+
+```text
+<output-dir>/ocr/<document-id>/<section>/page-<page-number>.json
+```
+
+结果包含识别文字、文字块四点坐标、边界框 `bbox`、可用的置信度、图片哈希、请求 ID 及成功响应的识别数据。坐标以提交图片的左上角为原点，单位是像素。缺失的置信度保存为 `null`，不编造数值。处理报告新增 `ocr_pages`，记录每页结果路径、缓存命中、识别状态和 `needs_review`；SQLite 通过已有报告路径定位这些结果，不新增数据表。
+
+无文字结果标记为 `empty` 并待核对；置信度缺失或低于阈值也会标记待核对。这不等于识别失败，也不是答案正确率保证。目前尚不支持单题切分、选项与答案关联，搜索接口不会新增题干或答案字段。
+
+再次执行相同命令会检查图片内容、请求选项和结果完整性，只补充未命中的页面。修改核对阈值不会重复识别。确实需要重新请求时使用：
+
+```powershell
+.\.conda\python.exe -m img2answer.cli --config configs\sample.sections.example.yml --output-dir data\processed --ocr --ocr-refresh
+```
+
+`--ocr-refresh` 必须配合 `--ocr`，会跳过有效缓存。服务调用不自动重试，超时并不能证明云端未处理，应核对调用记录后再续跑。权限、额度、限流或异常响应会停止导入并返回非零退出码，不覆盖失败文档的既有成功报告与元数据；此前完成的文档、页面缓存和渲染文件不回滚。
+
+提交图片仅支持静态 PNG/JPEG，最多 10,000,000 字节，单边大于 15 且小于 8192 像素，长宽比小于 50。超限会在调用前拒绝，可调整 `--dpi` 重新渲染；不会自动压缩或改变坐标系，严重模糊的图片不能保证恢复。
 
 ## 运行图片向量入库
 
@@ -312,6 +367,12 @@ API 不负责生成图片向量；需要先使用 CLI 完成 PDF 处理和图片
 
 ## 运行测试
 
+完整测试包含 OCR SDK 参数校验，需要先安装所有测试使用的可选依赖：
+
+```powershell
+.\.conda\python.exe -m pip install -e ".[vector,api,ocr]" --no-build-isolation
+```
+
 ```powershell
 $env:PYTHONPATH = "src"
 .\.conda\python.exe -m unittest discover -s tests -v
@@ -343,6 +404,11 @@ $env:PYTHONPATH = "src"
 - API 上传大小限制、分块请求及拒绝请求的资源清理
 - API 模型复用、并发初始化和初始化失败重试
 - 图片上传检索与真实 ChromaDB 集成
+- OCR 配置、凭证隐藏与 SDK 二进制请求参数
+- OCR 响应、坐标、尺寸及置信度校验
+- OCR 缓存、强制刷新、失败续跑及导入报告引用
+
+OCR 自动化测试使用模拟云端响应，不上传题库或产生云端调用费用，不代表真实材料的识别准确率。运行全部测试前需要安装 `.[vector,api,ocr]` 可选依赖。
 
 ## CI 门禁
 
@@ -352,7 +418,7 @@ CI 使用 Python 3.11，并执行：
 
 ```bash
 python -m pip install setuptools wheel
-python -m pip install -e ".[vector,api]" --no-build-isolation
+python -m pip install -e ".[vector,api,ocr]" --no-build-isolation
 python -c "import img2answer; print(img2answer.__version__)"
 python -m unittest discover -s tests -v
 ```
