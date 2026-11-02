@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 import json
 from typing import Any
@@ -29,6 +30,7 @@ def build_report(
     ocr_pages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     report = {
+        "imported_at": datetime.now(timezone.utc).isoformat(),
         "document_id": document_id,
         "source_path": str(metadata.path),
         "sha256": metadata.sha256,
