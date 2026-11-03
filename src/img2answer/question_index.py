@@ -13,7 +13,7 @@ from PIL import Image
 from .store import SQLiteStore
 from .vector_store import (
     ChromaQuestionVectorStore, EmbeddedImage, ImageEmbeddingModel, create_embedding_model,
-    question_embedding_signature, resolve_question_collection,
+    QuestionIndexUnavailableError, question_embedding_signature, resolve_question_collection,
 )
 
 
@@ -89,6 +89,7 @@ def index_questions(database: str | Path, document_id: str, chroma_dir: str | Pa
                     ) -> dict[str, Any]:
     """Prepare all embeddings first; publish only while their SQLite version is current."""
     publishing = False
+    failure_hint = "数据库读取失败，请检查 --database、文档 ID，并先完成导入和单题提取"
     try:
         signature = question_embedding_signature(embedding_model_name)
         collection_name = resolve_question_collection(collection_name, embedding_model_name)
@@ -98,10 +99,12 @@ def index_questions(database: str | Path, document_id: str, chroma_dir: str | Pa
             records = store.question_records(connection, document_id=document_id)
         if any(not current_question(record) for record in records):
             raise QuestionIndexError("题目与当前来源关联无效，请重新提取")
+        failure_hint = "题目字段校验失败，请检查结构化记录并重新提取"
         revisions = {record["id"]: record_revision(record) for record in records}
         hashes: dict[str, str] = {}
         vectors = []
         dimension = None
+        failure_hint = "截图快照准备失败，请检查单题图片完整性、尺寸和临时目录读写权限，必要时重新提取"
         with tempfile.TemporaryDirectory(prefix="img2answer-index-") as directory:
             paths = []
             for ordinal, record in enumerate(records):
@@ -110,7 +113,11 @@ def index_questions(database: str | Path, document_id: str, chroma_dir: str | Pa
                 path = Path(directory) / f"question-{ordinal}.image"
                 path.write_bytes(data)
                 paths.append(path)
+            failure_hint = "模型初始化失败，请检查模型依赖和权重"
+            if embedding_model_name == "openclip":
+                failure_hint += "；请在项目 .conda/ 环境安装 .[openclip] 可选依赖"
             model = (embedding_model or create_embedding_model(embedding_model_name)) if records else None
+            failure_hint = "图片向量计算失败，请检查模型运行环境、设备及图片内容"
             for record, path in zip(records, paths):
                 try:
                     embedding = list(model.embed_image(path))
@@ -131,6 +138,7 @@ def index_questions(database: str | Path, document_id: str, chroma_dir: str | Pa
                         "embedding_signature": signature, "embedding_model": embedding_model_name,
                     },
                 ))
+        failure_hint = "发布前版本复查失败，请检查数据库与截图状态，重新提取后重跑索引"
         with store.question_connection(for_update=True) as connection:
             current = store.question_records(connection, document_id=document_id)
             if (store.question_document_state(connection, document_id) != state
@@ -139,6 +147,7 @@ def index_questions(database: str | Path, document_id: str, chroma_dir: str | Pa
                     or any(hashlib.sha256(read_question_image(record)).hexdigest() != hashes[record["id"]]
                            for record in current)):
                 raise QuestionIndexError("索引期间来源、题目或截图已变化，请重新运行索引")
+            failure_hint = "单题 collection 打开失败，请检查索引目录权限、配置以及 .[vector] 可选依赖"
             vector_store = vector_store_factory(chroma_dir, collection_name=collection_name,
                                                embedding_model_name=embedding_model_name, create=True)
             old_ids = vector_store.document_ids(document_id, signature)
@@ -155,4 +164,6 @@ def index_questions(database: str | Path, document_id: str, chroma_dir: str | Pa
     except Exception as exc:
         if publishing:
             raise QuestionIndexError("单题索引发布失败，可能部分写入；请重新运行索引恢复") from exc
-        raise QuestionIndexError("单题索引准备失败，请检查数据库、图片、模型和 collection；尚未发布向量") from exc
+        if isinstance(exc, QuestionIndexUnavailableError):
+            failure_hint = "单题 collection 用途、版本或模型不兼容，请使用独立 collection 重建"
+        raise QuestionIndexError(f"{failure_hint}；尚未发布向量") from exc

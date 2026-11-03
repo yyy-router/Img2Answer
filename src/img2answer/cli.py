@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import traceback
 
 from .config import SectionConfig, load_config
 from .graphic_crop import crop_pages
@@ -206,12 +207,17 @@ def index_questions_main(argv: list[str]) -> int:
     parser.add_argument("--chroma-dir", default="data/processed/chroma")
     parser.add_argument("--embedding-model", choices=("pillow-hash", "openclip"), default="pillow-hash")
     parser.add_argument("--chroma-collection", default=None)
+    parser.add_argument("--verbose", action="store_true", help="失败时显示完整异常链，可能包含本地路径。")
     args = parser.parse_args(argv)
     try:
         result = index_questions(args.database, args.document_id, args.chroma_dir,
                                  embedding_model_name=args.embedding_model, collection_name=args.chroma_collection)
     except QuestionIndexError as exc:
         print(f"单题索引失败：{exc}", file=sys.stderr)
+        if args.verbose:
+            traceback.print_exception(exc, file=sys.stderr)
+        else:
+            print("可加 --verbose 查看完整异常链。", file=sys.stderr)
         return 1
     print("单题索引完成：" + " ".join(f"{key}={value}" for key, value in result.items()))
     return 0

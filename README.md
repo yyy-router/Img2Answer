@@ -246,6 +246,12 @@ data/processed/questions/run-<unique>/
 
 将 `sample_doc` 替换为导入配置中的文档 ID。命令只索引当前文档的 `graphic_reasoning` / `question_crop`，不会调用 OCR、修改题目字段或改写截图。缺失 / 损坏图片、非法向量或计算期间来源变化会使索引失败；准备阶段不更新旧向量。重复索引会替换同 ID 向量并清理该文档多余记录，当前有效零候选可以清空该文档旧单题索引。
 
+索引失败时，默认按数据库 / 字段、截图、模型初始化 / 计算、collection 和发布阶段给出修复建议，不打印原始异常或本地路径。需要详细诊断时，在同一命令后追加 `--verbose`，将完整异常链输出到 stderr；其中可能包含本地路径和异常原文，分享前请检查。两种模式失败都返回非零退出码，成功输出保持一致。
+
+```powershell
+.\.conda\python.exe -m img2answer.cli index-questions --database data\processed\img2answer.sqlite3 --document-id sample_doc --chroma-dir data\processed\chroma --embedding-model pillow-hash --verbose
+```
+
 新单题与原页面级图片使用独立 collection：
 
 | 模型 | 单题 collection | 原页面图片 collection |

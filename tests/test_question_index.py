@@ -60,6 +60,85 @@ class QuestionIndexTests(unittest.TestCase):
         return index_questions(self.fixture.store.path, self.fixture.document_id, self.root / "chroma",
                                vector_store_factory=self.factory, **kwargs)
 
+    def run_cli(self, extra=()):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        def run(*args, **kwargs):
+            return index_questions(*args, **kwargs, vector_store_factory=self.factory)
+        with redirect_stdout(stdout), redirect_stderr(stderr), \
+                patch("img2answer.question_index.index_questions", side_effect=run):
+            status = cli.main(["index-questions", "--database", str(self.fixture.store.path),
+                               "--document-id", "sample", "--chroma-dir", str(self.root / "chroma"), *extra])
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def test_cli_distinguishes_model_file_and_collection_failures_without_raw_details(self):
+        private_detail = f"private diagnostic {self.root}"
+        with patch("img2answer.question_index.create_embedding_model", side_effect=RuntimeError(private_detail)):
+            model_status, _, model_error = self.run_cli(["--embedding-model", "openclip"])
+        path = Path(self.fixture.questions[0]["image"]["output_path"])
+        data = path.read_bytes()
+        path.unlink()
+        file_status, _, file_error = self.run_cli()
+        path.write_bytes(data)
+        self.factory.side_effect = QuestionIndexUnavailableError(private_detail)
+        collection_status, _, collection_error = self.run_cli()
+        self.assertEqual((model_status, file_status, collection_status), (1, 1, 1))
+        self.assertIn("模型初始化", model_error)
+        self.assertIn(".[openclip]", model_error)
+        self.assertIn("截图", file_error)
+        self.assertIn("collection", collection_error)
+        self.assertIn("独立", collection_error)
+        self.assertEqual(len({model_error, file_error, collection_error}), 3)
+        for message in (model_error, file_error, collection_error):
+            self.assertIn("--verbose", message)
+            self.assertNotIn("Traceback", message)
+            self.assertNotIn(str(self.root), message)
+            self.assertNotIn(private_detail, message)
+
+    def test_verbose_failure_prints_nested_exception_chain_and_keeps_failure_status(self):
+        def missing_dependency(name):
+            try:
+                raise ImportError(f"missing test dependency at {self.root}")
+            except ImportError as exc:
+                raise RuntimeError("model initialization cause") from exc
+        with patch("img2answer.question_index.create_embedding_model", side_effect=missing_dependency):
+            status, stdout, stderr = self.run_cli(["--embedding-model", "openclip", "--verbose"])
+        self.assertEqual(status, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("ImportError: missing test dependency", stderr)
+        self.assertIn("RuntimeError: model initialization cause", stderr)
+        self.assertIn("QuestionIndexError", stderr)
+        self.assertIn("Traceback", stderr)
+        self.assertIn(str(self.root), stderr)
+        self.factory.assert_not_called()
+
+    def test_verbose_success_has_same_output_and_no_traceback(self):
+        self.assertEqual(self.run_cli(), self.run_cli(["--verbose"]))
+        status, _, stderr = self.run_cli(["--verbose"])
+        self.assertEqual(status, 0)
+        self.assertEqual(stderr, "")
+
+    def test_model_computation_failure_has_safe_actionable_diagnostic(self):
+        with patch("img2answer.question_index.create_embedding_model", return_value=Mock(
+                embed_image=Mock(side_effect=RuntimeError(f"sensitive backend detail {self.root}")))):
+            status, _, stderr = self.run_cli()
+        self.assertEqual(status, 1)
+        self.assertIn("向量计算", stderr)
+        self.assertNotIn("sensitive backend detail", stderr)
+        self.assertNotIn(str(self.root), stderr)
+        self.factory.assert_not_called()
+
+    def test_publication_diagnostics_keep_partial_write_warning_and_chain(self):
+        self.vectors.fail_upsert = True
+        status, _, default = self.run_cli()
+        self.assertEqual(status, 1)
+        self.assertIn("可能部分写入", default)
+        self.assertIn("--verbose", default)
+        self.assertNotIn("partial write", default)
+        status, _, verbose = self.run_cli(["--verbose"])
+        self.assertEqual(status, 1)
+        self.assertIn("可能部分写入", verbose)
+        self.assertIn("RuntimeError: partial write", verbose)
+
     def test_index_uses_only_questions_and_persists_revision_and_image_digest(self):
         before = [dict(row) for row in self.fixture.store.fetch_all("questions")]
         with patch("img2answer.ocr.OCRSettings.from_env", side_effect=AssertionError("credentials")):
