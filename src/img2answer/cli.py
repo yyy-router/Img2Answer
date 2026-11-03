@@ -21,6 +21,8 @@ DEFAULT_CHROMA_COLLECTION = "question_images"
 
 def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list and args_list[0] == "extract-questions":
+        return extract_questions_main(args_list[1:])
     if args_list and args_list[0] == "search-image":
         return search_image_main(args_list[1:])
     try:
@@ -115,6 +117,8 @@ def process_documents_main(argv: list[str]) -> int:
                         "cache_hit": ocr_result.cache_hit,
                         "block_count": ocr_result.block_count,
                         "needs_review": ocr_result.needs_review,
+                        "image_sha256": ocr_result.image_sha256,
+                        "result_sha256": ocr_result.result_sha256,
                     })
             rendered_sections.append((section, rendered_pages))
 
@@ -167,6 +171,27 @@ def process_documents_main(argv: list[str]) -> int:
                 f"skipped_missing_files={embedding_result.skipped_missing_files}"
             )
 
+    return 0
+
+
+def extract_questions_main(argv: list[str]) -> int:
+    from .question_extract import ExtractionError, extract_questions
+
+    parser = argparse.ArgumentParser(description="离线切分单题候选并写入 SQLite，所有结果均需核对。")
+    parser.add_argument("--report", required=True, help="包含 OCR 快照绑定的成功导入报告。")
+    parser.add_argument("--database", required=True, help="对应导入的现有 SQLite 数据库。")
+    parser.add_argument("--output-dir", required=True, help="单题截图与核对文件的输出根目录。")
+    parser.add_argument("--min-confidence", type=float, default=80, help="0 至 100 的核对阈值，默认 80。")
+    args = parser.parse_args(argv)
+    try:
+        result = extract_questions(args.report, args.database, args.output_dir, min_confidence=args.min_confidence)
+    except ExtractionError as exc:
+        print(f"单题提取失败：{exc}", file=sys.stderr)
+        return 1
+    print(f"提取完成：候选 {result['candidate_count']} 道，待核对 {result['needs_review_count']} 道，"
+          f"跳过页面 {result['skipped_page_count']} 页。")
+    print(f"运行目录：{result['run_dir']}")
+    print(f"核对文件：{result['extraction_path']}")
     return 0
 
 

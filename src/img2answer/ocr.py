@@ -220,6 +220,30 @@ class OCRPageResult:
     cache_hit: bool
     block_count: int
     needs_review: bool
+    image_sha256: str
+    result_sha256: str
+
+
+@dataclass(frozen=True)
+class OCRSnapshot:
+    image: bytes
+    width: int
+    height: int
+    result: dict[str, Any]
+
+
+def result_sha256(result: dict[str, Any]) -> str:
+    canonical = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def read_ocr_snapshot(image_path: str | Path, result_path: str | Path) -> OCRSnapshot:
+    """Read a validated local snapshot without credentials, SDK initialization or writes."""
+    image, width, height = _read_image(Path(image_path))
+    cached = _load_cache(Path(result_path), _cache_identity(image, width, height))
+    if cached is None:
+        raise OCRError("OCR 缓存缺失、损坏或与页面不匹配，请重新完成原有导入 / OCR 流程")
+    return OCRSnapshot(image, width, height, cached)
 
 
 def _read_image(path: Path) -> tuple[bytes, int, int]:
@@ -331,4 +355,6 @@ def recognize_page(
             block["confidence"] is None or block["confidence"] < min_confidence
             for block in blocks
         ),
+        image_sha256=identity["image_sha256"],
+        result_sha256=result_sha256(cached),
     )
