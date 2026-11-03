@@ -93,18 +93,24 @@ def _fields(raw_text: str) -> dict[str, Any]:
     duplicate_options: set[str] = set()
     answers: list[str | None] = []
     analysis = ""
+    in_analysis = False
     for index, marker in enumerate(markers):
         if marker.lastgroup == "analysis":
-            analysis = body[marker.end():].strip()
-            break
+            if not in_analysis:
+                analysis = body[marker.end():].strip()
+                in_analysis = True
+            continue
         end = markers[index + 1].start() if index + 1 < len(markers) else len(body)
         value = body[marker.end():end].strip()
         if marker.lastgroup in {"option", "bare_option"}:
+            if in_analysis:
+                continue
             label = marker.group(marker.lastgroup)
             if label in options:
                 duplicate_options.add(label)
             options[label] = value
         else:
+            # Explicit answers apply throughout the question, including the analysis.
             # A value on a later line is deliberately not associated with this label.
             first_line = body[marker.end():end].split("\n", 1)[0].strip()
             match = re.fullmatch(r"([A-D])[ \t]*[。．.;；]?", first_line)

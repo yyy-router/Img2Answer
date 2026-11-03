@@ -176,6 +176,60 @@ class QuestionPageTests(unittest.TestCase):
         self.assertIn("conflicting_answer", candidate["review_reasons"])
         self.assertIn("conflicting_options", candidate["review_reasons"])
 
+    def test_explicit_answers_after_analysis_are_collected(self):
+        for text in ("解析：说明\n正确答案：B", "解析：说明 正确答案：B",
+                     "答案：B\n解析：说明\n正确答案：B"):
+            with self.subTest(text=text):
+                candidate = self.page([block("1.题干", (20, 30, 180, 50)),
+                                       block(text, (20, 70, 300, 130))])["candidates"][0]
+                self.assertEqual(candidate["answer"], "B")
+                self.assertNotIn("missing_answer", candidate["review_reasons"])
+                self.assertNotIn("conflicting_answer", candidate["review_reasons"])
+                self.assertNotIn("invalid_answer", candidate["review_reasons"])
+
+    def test_conflicting_answers_after_analysis_are_not_silently_selected(self):
+        for text in ("答案：A\n解析：说明\n正确答案：B",
+                     "解析：说明\n答案：A\n正确答案：B"):
+            with self.subTest(text=text):
+                candidate = self.page([block("1.题干", (20, 30, 180, 50)),
+                                       block(text, (20, 70, 300, 150))])["candidates"][0]
+                self.assertIsNone(candidate["answer"])
+                self.assertIn("missing_answer", candidate["review_reasons"])
+                self.assertIn("conflicting_answer", candidate["review_reasons"])
+
+    def test_invalid_answers_after_analysis_invalidate_an_earlier_answer(self):
+        for value in ("E", "AB", "A/B", "\nB"):
+            with self.subTest(value=value):
+                candidate = self.page([block("1.题干", (20, 30, 180, 50)),
+                                       block(f"答案：A\n解析：说明\n正确答案：{value}",
+                                             (20, 70, 300, 170))])["candidates"][0]
+                self.assertIsNone(candidate["answer"])
+                self.assertIn("invalid_answer", candidate["review_reasons"])
+
+    def test_answers_after_analysis_still_require_adjacent_same_line_values(self):
+        for bbox, expected in (((80, 130, 95, 150), "C"),
+                               ((80, 160, 95, 180), None),
+                               ((300, 130, 315, 150), None)):
+            with self.subTest(bbox=bbox):
+                candidate = self.page([block("1.题干", (20, 30, 180, 50)),
+                                       block("解析：说明", (20, 80, 180, 100)),
+                                       block("正确答案：", (20, 130, 75, 150)),
+                                       block("C", bbox)])["candidates"][0]
+                self.assertEqual(candidate["answer"], expected)
+                if expected is None:
+                    self.assertIn("invalid_answer", candidate["review_reasons"])
+
+    def test_analysis_options_are_ignored_and_first_analysis_tail_is_preserved(self):
+        analysis = "A. 排除说明\nB. 补充说明\n解析：再次说明\n正确答案：B"
+        candidate = self.page([block("1.题干", (20, 30, 180, 50)),
+                               block("A. first B. second", (20, 70, 300, 90)),
+                               block(f"解析：{analysis}", (20, 110, 300, 210))])["candidates"][0]
+        self.assertEqual(candidate["stem_text"], "题干")
+        self.assertEqual(candidate["options"], dict(A="first", B="second"))
+        self.assertEqual(candidate["analysis_text"], analysis)
+        self.assertEqual(candidate["answer"], "B")
+        self.assertNotIn("conflicting_options", candidate["review_reasons"])
+
     def test_multiline_option_and_same_line_analysis(self):
         candidate = self.page([block("1.题干", (20, 30, 180, 50)),
                                block("A. 第一行", (20, 70, 180, 90)), block("续行", (20, 100, 180, 120)),
@@ -276,6 +330,24 @@ class QuestionExtractionTests(unittest.TestCase):
             self.assertEqual(json.loads(record["options_json"]), question["options"])
             with Image.open(io.BytesIO(self.snapshot.image)) as source, Image.open(question["image"]["output_path"]) as crop:
                 self.assertEqual(crop.tobytes(), source.crop(question["image"]["bbox"]).tobytes())
+
+    def test_answers_after_analysis_are_persisted_in_json_and_sqlite(self):
+        self.snapshot = make_snapshot([
+            block("1.题干\n答案：A\n解析：说明\n正确答案：B", (20, 30, 300, 180)),
+            block("2.题干\n解析：说明\n正确答案：C", (20, 300, 300, 450)),
+        ])
+        self.add_page(1, self.snapshot)
+        self.import_report()
+        result = self.run_extract()
+        exported = json.loads(Path(result["extraction_path"]).read_text(encoding="utf-8"))
+        first, second = exported["questions"]
+        self.assertIsNone(first["answer"])
+        self.assertIn("conflicting_answer", first["review_reasons"])
+        self.assertEqual(second["answer"], "C")
+        for question in (first, second):
+            record = self.store.fetch_question(question["id"])
+            self.assertEqual(record["answer"], question["answer"])
+            self.assertEqual(json.loads(record["review_reasons_json"]), question["review_reasons"])
 
     def test_rerun_replaces_paths_and_records_without_duplicates(self):
         first, state, files = self.protect_existing()
