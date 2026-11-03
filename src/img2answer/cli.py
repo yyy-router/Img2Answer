@@ -23,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
     if args_list and args_list[0] == "extract-questions":
         return extract_questions_main(args_list[1:])
+    if args_list and args_list[0] == "index-questions":
+        return index_questions_main(args_list[1:])
     if args_list and args_list[0] == "search-image":
         return search_image_main(args_list[1:])
     try:
@@ -192,6 +194,26 @@ def extract_questions_main(argv: list[str]) -> int:
           f"跳过页面 {result['skipped_page_count']} 页。")
     print(f"运行目录：{result['run_dir']}")
     print(f"核对文件：{result['extraction_path']}")
+    return 0
+
+
+def index_questions_main(argv: list[str]) -> int:
+    from .question_index import QuestionIndexError, index_questions
+
+    parser = argparse.ArgumentParser(description="为当前文档的单题截图建立独立向量索引。")
+    parser.add_argument("--database", required=True)
+    parser.add_argument("--document-id", required=True)
+    parser.add_argument("--chroma-dir", default="data/processed/chroma")
+    parser.add_argument("--embedding-model", choices=("pillow-hash", "openclip"), default="pillow-hash")
+    parser.add_argument("--chroma-collection", default=None)
+    args = parser.parse_args(argv)
+    try:
+        result = index_questions(args.database, args.document_id, args.chroma_dir,
+                                 embedding_model_name=args.embedding_model, collection_name=args.chroma_collection)
+    except QuestionIndexError as exc:
+        print(f"单题索引失败：{exc}", file=sys.stderr)
+        return 1
+    print("单题索引完成：" + " ".join(f"{key}={value}" for key, value in result.items()))
     return 0
 
 

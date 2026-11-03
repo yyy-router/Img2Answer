@@ -37,6 +37,10 @@ class ImportChangedError(ValueError):
     """The import changed after an extraction took its snapshot."""
 
 
+class QuestionDataUnavailableError(RuntimeError):
+    """Question data cannot be read without an import or schema upgrade."""
+
+
 class SQLiteStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -260,6 +264,54 @@ class SQLiteStore:
         with self._connect(read_only=True) as connection:
             return connection.execute("SELECT * FROM questions WHERE image_id = ?", (image_id,)).fetchone()
 
+    @contextmanager
+    def question_connection(self, *, for_update: bool = False) -> Iterator[sqlite3.Connection]:
+        """Keep question reads or final index publication on one SQLite snapshot."""
+        if not self.path.is_file():
+            raise QuestionDataUnavailableError("题目数据库不可用，请先完成导入和单题提取")
+        with self._connect(read_only=not for_update, existing=True) as connection:
+            connection.execute("BEGIN IMMEDIATE" if for_update else "BEGIN")
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            if not {"questions", "question_images", "source_documents", "process_reports"} <= tables:
+                raise QuestionDataUnavailableError("单题数据表不可用，请先完成导入和单题提取")
+            yield connection
+
+    @staticmethod
+    def question_records(connection: sqlite3.Connection, *, document_id: str | None = None,
+                         question_id: str | None = None, image_id: str | None = None) -> list[dict[str, Any]]:
+        predicates, parameters = [], []
+        for column, value in (("document_id", document_id), ("id", question_id), ("image_id", image_id)):
+            if value is not None:
+                predicates.append(f"q.{column} = ?")
+                parameters.append(value)
+        where = " AND ".join(predicates) if predicates else "1 = 1"
+        rows = connection.execute(
+            """SELECT q.*, i.id AS joined_image_id, i.document_id AS image_document_id,
+                      i.section AS image_section, i.image_role, i.source_page_path, i.output_path,
+                      i.bbox_json, i.width, i.height, i.created_at AS image_created_at,
+                      s.sha256 AS import_sha256, s.page_count AS import_page_count,
+                      s.updated_at AS source_updated_at, p.created_at AS report_created_at,
+                      p.report_path, p.errors_json AS import_errors_json
+               FROM questions q
+               LEFT JOIN question_images i ON i.id = q.image_id
+               LEFT JOIN source_documents s ON s.id = q.document_id
+               LEFT JOIN process_reports p ON p.document_id = q.document_id
+               WHERE """ + where + " ORDER BY q.id", parameters,
+        )
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def question_document_state(connection: sqlite3.Connection, document_id: str) -> ImportState:
+        state = SQLiteStore._import_state(connection, document_id)
+        if state is None:
+            raise ValueError("文档不存在或缺少成功导入记录")
+        errors = json.loads(connection.execute(
+            "SELECT errors_json FROM process_reports WHERE document_id = ?", (document_id,),
+        ).fetchone()[0])
+        if errors != []:
+            raise ValueError("文档缺少有效成功导入记录")
+        return state
+
     def fetch_question_images(self, document_id: str | None = None) -> list[sqlite3.Row]:
         with self._connect() as connection:
             if document_id is None:
@@ -302,9 +354,10 @@ class SQLiteStore:
             ).fetchone()
 
     @contextmanager
-    def _connect(self, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
-        connection = (sqlite3.connect(f"{self.path.resolve().as_uri()}?mode=ro", uri=True)
-                      if read_only else sqlite3.connect(self.path))
+    def _connect(self, *, read_only: bool = False, existing: bool = False) -> Iterator[sqlite3.Connection]:
+        mode = "ro" if read_only else "rw"
+        connection = (sqlite3.connect(f"{self.path.resolve().as_uri()}?mode={mode}", uri=True)
+                      if read_only or existing else sqlite3.connect(self.path))
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         try:

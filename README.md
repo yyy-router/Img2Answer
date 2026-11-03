@@ -42,6 +42,8 @@ Img2Answer 是一个本地优先的 Python 项目，用于把本地 PDF 题库�
   - 上传图片进行相似检索
   - 图片详情回查接口
   - 数据库、向量库和模型使用服务端配置
+- 支持显式建立独立单题向量索引，上传题图返回题干、选项、答案、解析及待核对状态。
+- 支持单题详情与截图预览；通过记录版本和图片摘要过滤失效向量。
 - 提供 CLI 入口。
 - 使用生成的样本 PDF 做单元测试和集成测试，不依赖真实本地材料。
 
@@ -51,7 +53,7 @@ Img2Answer 是一个本地优先的 Python 项目，用于把本地 PDF 题库�
 - Web UI
 - 完整题目解析
 - 跨页拼题、多栏通用切题、图标答案识别与单题审核修正
-- 单题候选自动向量入库，以及检索返回题干、答案
+- 提取后自动触发单题索引，目前需显式运行索引命令
 - 面向生产的大规模图片 embedding 模型接入
 
 ## 仓库规则
@@ -183,7 +185,7 @@ IMG2ANSWER_OCR_MIN_CONFIDENCE=80
 
 结果包含识别文字、文字块四点坐标、边界框 `bbox`、可用的置信度、图片哈希、请求 ID 及成功响应的识别数据。坐标以提交图片的左上角为原点，单位是像素。缺失的置信度保存为 `null`，不编造数值。处理报告新增 `ocr_pages`，记录每页结果路径、缓存命中、识别状态和 `needs_review`；SQLite 通过已有报告路径定位这些结果，不新增数据表。
 
-无文字结果标记为 `empty` 并待核对；置信度缺失或低于阈值也会标记待核对。这不等于识别失败，也不是答案正确率保证。单题候选通过下面的独立离线命令提取，搜索接口仍不返回题干或答案。
+无文字结果标记为 `empty` 并待核对；置信度缺失或低于阈值也会标记待核对。这不等于识别失败，也不是答案正确率保证。单题候选通过下面的独立离线命令提取，再建立单题索引供新接口检索。
 
 再次执行相同命令会检查图片内容、请求选项和结果完整性，只补充未命中的页面。修改核对阈值不会重复识别。确实需要重新请求时使用：
 
@@ -232,6 +234,61 @@ data/processed/questions/run-<unique>/
 重复提取会在事务内替换该文档的单题候选，ID 保持稳定，历史截图与核对文件保留。有效零候选结果会清空旧单题记录；预检、文件或数据库写入失败则不替换历史候选，并仅清理本轮已知产物。原有页面级裁剪和导入报告保留。
 
 原有导入命令重新导入同一文档时，会通过图片外键级联删除旧单题记录，需要再次提取。单题截图不会自动进入 ChromaDB，现有图片搜索行为保持原样。原始来源页和 OCR 路径可能被后续导入覆盖；核对文件中的摘要用于识别来源变化，历史目录也不会自动清理。实际切题效果仍需在少量本地材料上人工核对。
+
+## 建立单题索引与检索
+
+完成 `extract-questions` 后，为指定文档的当前单题候选建立索引。安装依赖与运行均使用项目根目录的 `.conda/`：
+
+```powershell
+.\.conda\python.exe -m pip install -e ".[vector,api]" --no-build-isolation
+.\.conda\python.exe -m img2answer.cli index-questions --database data\processed\img2answer.sqlite3 --document-id sample_doc --chroma-dir data\processed\chroma --embedding-model pillow-hash
+```
+
+将 `sample_doc` 替换为导入配置中的文档 ID。命令只索引当前文档的 `graphic_reasoning` / `question_crop`，不会调用 OCR、修改题目字段或改写截图。缺失 / 损坏图片、非法向量或计算期间来源变化会使索引失败；准备阶段不更新旧向量。重复索引会替换同 ID 向量并清理该文档多余记录，当前有效零候选可以清空该文档旧单题索引。
+
+新单题与原页面级图片使用独立 collection：
+
+| 模型 | 单题 collection | 原页面图片 collection |
+| --- | --- | --- |
+| `pillow-hash` | `question_candidates` | `question_images` |
+| `openclip` | `question_candidates_openclip` | `question_images_openclip` |
+
+使用 OpenCLIP 时先安装现有 `.[openclip]` 可选依赖，再为索引命令指定 `--embedding-model openclip`，API 同时配置 `IMG2ANSWER_EMBEDDING_MODEL=openclip`。CLI 不读取 `.env`，API 会读取；两侧必须使用相同模型及数据集。自定义单题 collection 时，CLI 使用 `--chroma-collection`，API 使用 `IMG2ANSWER_QUESTION_CHROMA_COLLECTION`，不要填入原页面 collection。用途、索引版本或模型签名不匹配时拒绝复用，需用新的独立 collection 重建。
+
+API 配置示例（仅将所需项补入实际 `.env`）：
+
+```dotenv
+IMG2ANSWER_DATABASE=data/processed/img2answer.sqlite3
+IMG2ANSWER_CHROMA_DIR=data/processed/chroma
+IMG2ANSWER_EMBEDDING_MODEL=pillow-hash
+IMG2ANSWER_QUESTION_CHROMA_COLLECTION=
+IMG2ANSWER_IMAGE_ROOT=data/processed
+```
+
+从项目根目录启动服务：
+
+```powershell
+.\.conda\python.exe -m uvicorn img2answer.api:app --host 127.0.0.1 --port 8000
+```
+
+上传查询截图（PowerShell 使用 `curl.exe`）：
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/search/question -F "file=@data/query.png" -F "top_k=5"
+```
+
+响应包含 `query_image`、`top_k`、模型、collection 及 `results`。每条结果包含 `rank`、原始 `distance`、图片 / 题目 ID、`record_revision`、文档 / 页码 / 题号、`stem_text`、`options`、`answer`、`analysis_text`、`parse_status`、`review_reasons` 和 `image`（宽高、bbox、`preview_url`）。新接口不返回磁盘路径。所有候选仍为 `needs_review`；缺失 / 冲突答案继续为 `null`，距离不代表答案正确率。
+
+```http
+GET /questions/{经过路径编码的question_id}
+GET /image-content/{经过路径编码的image_id}?revision={record_revision}
+```
+
+题目详情另外返回 `raw_text`，无需建立向量。浏览器可直接打开返回的 `preview_url`；接口按实际内容返回静态 PNG / JPEG，且只允许 `IMG2ANSWER_IMAGE_ROOT` 内当前有效单题的图片。自定义截图输出目录时，应把该配置设为包含截图的适当根目录。截图缺失或越界返回 `404`，同 ID 已重新提取但 URL 的 revision 过期返回 `409`，刷新题目详情后使用新 URL。详情 / 预览不加载模型，也不调用 Chroma 或 OCR。
+
+重新提取或重新导入后，旧向量即使物理上仍存在，也不会关联到新题目的答案；失效向量不占有效 Top K，全部失效时返回空结果。需再次运行 `index-questions` 恢复最新索引。未建立单题索引、数据库缺少单题表或 collection 不兼容时，新检索返回 `503`，不会自动创建替代数据。
+
+SQLite 与 ChromaDB 之间没有跨库原子提交。发布或清理失败会返回失败且可能已部分写入；查询仍只接受当前版本，重新运行索引命令即可幂等恢复。模型或索引版本变化时重新建独立 collection；历史截图目录不会自动删除。真实材料的截图检索效果需使用本地样本人工验证。
 
 ## 运行图片向量入库
 
@@ -337,6 +394,8 @@ API 是可选能力。使用前安装 API 依赖：
 IMG2ANSWER_DATABASE=data/processed/img2answer.sqlite3
 IMG2ANSWER_CHROMA_DIR=data/processed/chroma
 IMG2ANSWER_CHROMA_COLLECTION=
+IMG2ANSWER_QUESTION_CHROMA_COLLECTION=
+IMG2ANSWER_IMAGE_ROOT=data/processed
 IMG2ANSWER_EMBEDDING_MODEL=pillow-hash
 IMG2ANSWER_TOP_K=5
 IMG2ANSWER_MAX_UPLOAD_BYTES=10485760
@@ -355,6 +414,8 @@ IMG2ANSWER_MAX_UPLOAD_BYTES=10485760
 | `IMG2ANSWER_DATABASE` | `data/processed/img2answer.sqlite3` | SQLite 数据库路径 |
 | `IMG2ANSWER_CHROMA_DIR` | `data/processed/chroma` | ChromaDB 持久化目录 |
 | `IMG2ANSWER_CHROMA_COLLECTION` | 未设置 | 按模型选择默认 collection |
+| `IMG2ANSWER_QUESTION_CHROMA_COLLECTION` | 未设置 | 单题索引 collection，与页面索引独立 |
+| `IMG2ANSWER_IMAGE_ROOT` | `data/processed` | 单题图片预览允许的根目录 |
 | `IMG2ANSWER_EMBEDDING_MODEL` | `pillow-hash` | 图片 embedding 模型 |
 | `IMG2ANSWER_TOP_K` | `5` | 默认返回数量，必须大于 0 |
 | `IMG2ANSWER_MAX_UPLOAD_BYTES` | `10485760` | 图片大小上限，单位字节，默认 10 MiB，必须大于 0 |
@@ -390,7 +451,7 @@ POST http://127.0.0.1:8000/search/image
 
 数据库路径、向量库路径及模型由服务端配置，不属于请求参数。
 
-响应中的 `query_image` 是上传文件名，`results` 为检索结果。查询图片只用于本次检索，系统临时文件在成功或失败后都会清理；上传图片不会作为新题目写入数据库或向量库。结果继续包含用于本地核查的裁剪图、来源页和报告路径，目前没有图片下载接口。
+响应中的 `query_image` 是上传文件名，`results` 为检索结果。查询图片只用于本次检索，系统临时文件在成功或失败后都会清理；上传图片不会作为新题目写入数据库或向量库。原 `/search/image` 结果继续包含用于本地核查的裁剪图、来源页和报告路径。查询单题与浏览器预览请使用上文的新接口。
 
 上传图片默认最多 10 MiB，请求体额外允许 64 KiB 的表单开销。服务在 multipart 解析前有界接收并检查实际请求体大小，复制图片时再次检查文件大小，超限返回 `413`；该检查不依赖客户端声明的 `Content-Length`。
 
@@ -435,6 +496,10 @@ $env:PYTHONPATH = "src"
 - embedding 模型选择
 - 图片向量入库 metadata
 - 真实 ChromaDB 持久化
+- 单题索引隔离、版本 / 图片摘要绑定、重复运行、零候选及失败恢复
+- 单题 HTTP 搜索、题目字段关联、失效命中过滤与有效 Top K 补足
+- 单题详情、版本化截图预览及允许目录边界
+- 生成 OCR 样本到真实 ChromaDB、HTTP 搜索和图片预览的端到端验证
 - 图片相似检索
 - 检索结果 SQLite 回查
 - 检索结果详情回查
