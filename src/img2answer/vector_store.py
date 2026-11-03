@@ -106,6 +106,27 @@ def create_embedding_model(name: str = "pillow-hash") -> ImageEmbeddingModel:
     raise ValueError(f"unsupported embedding model: {name}")
 
 
+class QuestionIndexUnavailableError(RuntimeError):
+    """An existing compatible question index is required."""
+
+
+def question_embedding_signature(name: str) -> str:
+    signatures = {
+        "pillow-hash": "pillow-hash:8x8:L:inverse-255:round-6:v1",
+        "openclip": "openclip:ViT-B-32:laion2b_s34b_b79k:l2:v1",
+    }
+    try:
+        return signatures[name]
+    except KeyError:
+        raise ValueError("unsupported question embedding model") from None
+
+
+def resolve_question_collection(collection_name: str | None, model_name: str) -> str:
+    question_embedding_signature(model_name)
+    return collection_name or ("question_candidates" if model_name == "pillow-hash"
+                               else "question_candidates_openclip")
+
+
 class ChromaImageVectorStore:
     def __init__(self, persist_dir: str | Path, collection_name: str = "question_images"):
         try:
@@ -170,6 +191,53 @@ class ChromaImageVectorStore:
                 )
             )
         return matches
+
+
+class ChromaQuestionVectorStore(ChromaImageVectorStore):
+    """A separately identified collection; searches never create a missing index."""
+
+    def __init__(self, persist_dir: str | Path, collection_name: str = "question_candidates", *,
+                 embedding_model_name: str = "pillow-hash", create: bool = False):
+        import chromadb
+        from chromadb import errors
+
+        # Chroma 0.5 reports a missing collection as ValueError; later versions use typed errors.
+        missing_collection_errors = (ValueError,) + tuple(
+            getattr(errors, name) for name in ("NotFoundError", "InvalidCollectionException")
+            if hasattr(errors, name)
+        )
+
+        expected = {"index_kind": "question_candidates", "index_schema_version": 1,
+                    "embedding_signature": question_embedding_signature(embedding_model_name)}
+        self.persist_dir = Path(persist_dir)
+        if not create and not (self.persist_dir / "chroma.sqlite3").is_file():
+            raise QuestionIndexUnavailableError("单题索引不可用，请先建立单题索引")
+        if create:
+            self.persist_dir.mkdir(parents=True, exist_ok=True)
+        self.client = chromadb.PersistentClient(path=str(self.persist_dir))
+        try:
+            self.collection = self.client.get_collection(name=collection_name)
+        except missing_collection_errors:
+            if not create:
+                raise QuestionIndexUnavailableError("单题索引不可用，请先建立单题索引") from None
+            self.collection = self.client.create_collection(name=collection_name, metadata=expected)
+        if any((self.collection.metadata or {}).get(key) != value for key, value in expected.items()):
+            raise QuestionIndexUnavailableError("单题索引用途、版本或模型不匹配，请使用独立 collection 重建")
+
+    def count(self) -> int:
+        return self.collection.count()
+
+    def document_ids(self, document_id: str, signature: str) -> set[str]:
+        result = self.collection.get(where={"$and": [
+            {"document_id": document_id}, {"image_role": "question_crop"},
+            {"section": "graphic_reasoning"},
+            {"embedding_signature": signature},
+        ]}, include=[])
+        return set(result["ids"])
+
+    def delete_ids(self, ids: Sequence[str]) -> None:
+        if ids:
+            self.collection.delete(ids=list(ids))
 
 
 def embed_question_images(

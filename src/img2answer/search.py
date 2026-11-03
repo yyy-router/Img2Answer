@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import quote
 
+from PIL import Image
+
+from .question_index import (current_question, decoded_question_fields, read_question_image, record_revision)
 from .store import SQLiteStore
-from .vector_store import ImageEmbeddingModel, ImageSearchMatch
+from .vector_store import ImageEmbeddingModel, ImageSearchMatch, question_embedding_signature
 
 
 class ImageSearchStore(Protocol):
@@ -98,3 +103,75 @@ def fetch_question_image_detail(sqlite_store: SQLiteStore, image_id: str) -> Que
         height=row["height"],
         report_path=row["report_path"],
     )
+
+
+def question_detail(record: dict[str, Any], *, include_raw: bool = False) -> dict[str, Any]:
+    fields = decoded_question_fields(record)
+    revision = record_revision(record)
+    result = {key: record[key] for key in (
+        "document_id", "section", "page_number", "question_no", "image_id", "stem_text",
+        "answer", "analysis_text", "parse_status",
+    )}
+    result.update(question_id=record["id"], record_revision=revision,
+                  options=fields["options_json"], review_reasons=fields["review_reasons_json"],
+                  image={"width": record["width"], "height": record["height"], "bbox": fields["bbox_json"],
+                         "preview_url": f"/image-content/{quote(record['image_id'], safe='')}?revision={revision}"})
+    if include_raw:
+        result["raw_text"] = record["raw_text"]
+    return result
+
+
+def fetch_question_detail(sqlite_store: SQLiteStore, question_id: str) -> dict[str, Any] | None:
+    with sqlite_store.question_connection() as connection:
+        records = sqlite_store.question_records(connection, question_id=question_id)
+        if not records or not current_question(records[0]):
+            return None
+        return question_detail(records[0], include_raw=True)
+
+
+def search_similar_questions(query_image: str | Path, *, sqlite_store: SQLiteStore, vector_store: Any,
+                             embedding_model: ImageEmbeddingModel, embedding_model_name: str,
+                             top_k: int) -> list[dict[str, Any]]:
+    if top_k < 1:
+        raise ValueError("top_k must be greater than 0")
+    signature = question_embedding_signature(embedding_model_name)
+    valid: dict[str, dict[str, Any]] = {}
+    checked: set[str] = set()
+    count = vector_store.count()
+    embedding = embedding_model.embed_image(query_image) if count else None
+    # A single read transaction prevents fields from different extraction runs being combined.
+    with sqlite_store.question_connection() as connection:
+        if count == 0:
+            return []
+        limit = min(top_k, count)
+        while True:
+            matches = vector_store.query_similar_images(embedding, top_k=limit)
+            for match in matches:
+                if match.image_id in checked:
+                    continue
+                checked.add(match.image_id)
+                records = sqlite_store.question_records(connection, image_id=match.image_id)
+                if not records or not current_question(records[0]):
+                    continue
+                record = records[0]
+                revision = record_revision(record)
+                expected = {"index_schema_version": "1", "embedding_signature": signature,
+                            "question_id": record["id"], "image_id": record["image_id"],
+                            "document_id": record["document_id"], "section": record["section"],
+                            "image_role": "question_crop", "record_revision": revision}
+                if any(match.metadata.get(key) != value for key, value in expected.items()):
+                    continue
+                try:
+                    digest = hashlib.sha256(read_question_image(record)).hexdigest()
+                except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
+                    continue
+                if match.metadata.get("image_sha256") != digest:
+                    continue
+                valid[match.image_id] = {**question_detail(record), "distance": match.distance}
+            if len(valid) >= top_k or limit >= count:
+                break
+            limit = min(count, max(limit + 1, limit * 2))
+    results = sorted(valid.values(), key=lambda value: (
+        value["distance"] is None, value["distance"] if value["distance"] is not None else 0, value["image_id"],
+    ))[:top_k]
+    return [{"rank": rank, **result} for rank, result in enumerate(results, start=1)]
