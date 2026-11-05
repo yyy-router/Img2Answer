@@ -45,6 +45,7 @@ describe('query and results', () => {
     render(<App />)
     expect(screen.getByRole('button', { name: /搜索相似题/ })).toBeDisabled()
     expect(screen.getByText('相似题目会出现在这里')).toBeVisible()
+    expect(screen.getByText('选择一张题图，开始这次查找。')).toBeVisible()
     expect(screen.queryByText('材料中的答案')).not.toBeInTheDocument()
   })
 
@@ -59,6 +60,8 @@ describe('query and results', () => {
     expect((options?.body as FormData).has('top_k')).toBe(false)
     expect(options?.headers).toBeUndefined()
     expect(within(detailPanel()).getAllByText('待核对').length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /查看第 1 题/ }))
+      .toHaveAccessibleName('查看第 1 题：示例第 1 题：选择符合规律的图形。（待核对）')
   })
 
   it('validates the result count and submits an explicit integer', async () => {
@@ -102,7 +105,23 @@ describe('query and results', () => {
     await upload()
     await search()
     expect(await screen.findByText('没有找到有效的相似题')).toBeVisible()
+    expect(screen.getByText('试试更完整的截图，或确认题库已建立索引。')).toBeVisible()
     expect(screen.queryByText('材料中的答案')).not.toBeInTheDocument()
+  })
+
+  it('explains a pending search without asking for another image', async () => {
+    let finish!: (response: Response) => void
+    fetchMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    render(<App />)
+    await upload()
+    await search()
+    const results = screen.getByRole('region', { name: '相似题目' })
+    expect(within(results).getByText('正在题库中寻找相似题…')).toBeVisible()
+    expect(within(results).getByText('请稍候，正在比对题库。')).toBeVisible()
+    expect(within(results).queryByText('选择一张题图，开始这次查找。')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /正在搜索/ })).toBeDisabled()
+    await act(async () => { finish(json({ results: [] })) })
+    expect(within(results).getByText('没有找到有效的相似题')).toBeVisible()
   })
 
   it.each([
@@ -116,6 +135,9 @@ describe('query and results', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(String(message))
     expect(screen.queryByText(/private backend/)).not.toBeInTheDocument()
     expect(screen.getByText('query.png')).toBeVisible()
+    const results = screen.getByRole('region', { name: '相似题目' })
+    expect(within(results).getByText('请查看错误提示，处理后重新搜索。')).toBeVisible()
+    expect(within(results).queryByText('选择一张题图，开始这次查找。')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /搜索相似题/ })).toBeEnabled()
   })
 
@@ -203,6 +225,7 @@ describe('question integrity and resource lifecycle', () => {
     await upload()
     await search()
     expect(await within(detailPanel()).findByRole('alert')).toHaveTextContent('原答案已隐藏')
+    expect(screen.getByRole('button', { name: /查看第 1 题/ })).toHaveAccessibleName(/记录已更新/)
     expect(within(detailPanel()).queryByText('材料中的答案')).not.toBeInTheDocument()
     details[0] = question(1, { answer: 'B', record_revision: 'updated', image: {
       ...question(1).image, preview_url: '/image-content/current?revision=updated',

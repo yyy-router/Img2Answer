@@ -15,7 +15,8 @@ export function ResultsPanel({ results, status, selected, staleIds, onSelect, on
       <p className="mb-4 px-1 text-xs text-slate-400">按相似程度排序，选择题目查看原文</p>
       {results.map(result => <button type="button" key={result.question_id}
         className={`group w-full rounded-xl border p-3 text-left transition ${selected === result.question_id ? 'border-blue-500 bg-blue-50/40 ring-1 ring-blue-500/20' : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'}`}
-        aria-pressed={selected === result.question_id} aria-label={`查看第 ${result.question_no} 题：${result.stem_text || '图形题'}`}
+        aria-pressed={selected === result.question_id}
+        aria-label={`查看第 ${result.question_no} 题：${result.stem_text || '图形题'}（${staleIds.has(result.question_id) ? '记录已更新' : '待核对'}）`}
         onClick={() => onSelect(result)}>
         <div className="flex items-start gap-3">
           <div className="w-24 shrink-0 overflow-hidden rounded-lg border border-slate-100 bg-slate-50">
@@ -36,7 +37,11 @@ export function ResultsPanel({ results, status, selected, staleIds, onSelect, on
     </div> : <div className="flex min-h-80 flex-col items-center justify-center px-8 py-14 text-center" role="status" aria-live="polite">
       <span className={`mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-50 text-slate-300 ${status === 'loading' ? 'animate-pulse' : ''}`}><Icon name="search" className="h-7 w-7" /></span>
       <p className="text-sm font-medium text-slate-500">{status === 'loading' ? '正在题库中寻找相似题…' : status === 'empty' ? '没有找到有效的相似题' : status === 'error' ? '搜索未完成' : '相似题目会出现在这里'}</p>
-      <p className="mt-2 text-xs leading-6 text-slate-400">{status === 'empty' ? '试试更完整的截图，或确认题库已建立索引。' : '选择一张题图，开始这次查找。'}</p>
+      <p className="mt-2 text-xs leading-6 text-slate-400">{
+        status === 'empty' ? '试试更完整的截图，或确认题库已建立索引。'
+          : status === 'loading' ? '请稍候，正在比对题库。'
+          : status === 'error' ? '请查看错误提示，处理后重新搜索。'
+          : '选择一张题图，开始这次查找。'}</p>
     </div>}
   </section>
 }
