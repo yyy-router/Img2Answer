@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+@layer base {
+  button, a, input { -webkit-tap-highlight-color: transparent; }
+  button:not(:disabled), summary { cursor: pointer; }
+  button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--color-blue-600); outline-offset: 4px; }
+  ::selection { background: var(--color-blue-100); }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
+}
+
+@layer components {
+  .panel { @apply overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_2px_10px_-6px_#0f172a20]; }
+  .step-label { @apply flex h-6 w-6 items-center justify-center rounded-md bg-slate-100 text-[10px] font-semibold tabular-nums text-slate-500; }
+  .button-primary { @apply inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none; }
+  .button-secondary { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50; }
+  .review-badge { @apply shrink-0 rounded-md bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200/60; }
+  .field-heading { @apply mb-2 text-xs font-semibold text-slate-500; }
+  .question-text { @apply whitespace-pre-wrap break-words text-sm leading-7 text-slate-700; }
+  .notice { @apply rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-6 text-amber-800; }
+  .image-surface { background-color: #fafbfc; background-image: radial-gradient(#dfe4ec 0.6px, transparent 0.6px); background-size: 9px 9px; }
+}

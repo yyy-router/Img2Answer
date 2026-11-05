@@ -12,3 +12,11 @@ docs/
 .env
 .env.*
 !.env.example
+node_modules/
+frontend/dist/
+.npm-cache/
+.sites-runtime/
+.vite/
+coverage/
+playwright-report/
+test-results/
