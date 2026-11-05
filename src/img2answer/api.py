@@ -11,9 +11,10 @@ from typing import BinaryIO, Callable
 
 from dotenv import dotenv_values
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from starlette.staticfiles import StaticFiles
 
 from .cli import resolve_chroma_collection
 from .question_index import current_question, record_revision, validate_question_image
@@ -38,6 +39,7 @@ class ApiSettings:
     max_upload_bytes: int = 10 * 1024 * 1024
     question_chroma_collection: str | None = None
     image_root: Path = Path("data/processed")
+    web_dist: Path = Path("frontend/dist")
 
     def __post_init__(self) -> None:
         if self.top_k < 1:
@@ -61,6 +63,7 @@ class ApiSettings:
             max_upload_bytes=int(values.get("IMG2ANSWER_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))),
             question_chroma_collection=values.get("IMG2ANSWER_QUESTION_CHROMA_COLLECTION") or None,
             image_root=Path(values.get("IMG2ANSWER_IMAGE_ROOT") or "data/processed"),
+            web_dist=Path(values.get("IMG2ANSWER_WEB_DIST") or "frontend/dist"),
         )
 
 
@@ -281,6 +284,19 @@ def create_app(
             logger.exception("Question image lookup failed")
             raise HTTPException(status_code=500, detail="Image lookup failed; check server logs") from exc
         return Response(content=data, media_type=mime, headers={"Cache-Control": "no-store"})
+
+    web_dist = app.state.settings.web_dist.resolve()
+    if (web_dist / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=web_dist / "assets"), name="web-assets")
+
+    @app.get("/", include_in_schema=False)
+    def get_web_app() -> FileResponse:
+        index = web_dist / "index.html"
+        if not index.is_file():
+            raise HTTPException(status_code=503, detail=(
+                "前端尚未构建，请执行 npm --prefix frontend ci 和 npm --prefix frontend run build，然后重启服务。"
+            ))
+        return FileResponse(index, media_type="text/html", headers={"Cache-Control": "no-store"})
 
     return app
 

@@ -44,13 +44,13 @@ Img2Answer 是一个本地优先的 Python 项目，用于把本地 PDF 题库�
   - 数据库、向量库和模型使用服务端配置
 - 支持显式建立独立单题向量索引，上传题图返回题干、选项、答案、解析及待核对状态。
 - 支持单题详情与截图预览；通过记录版本和图片摘要过滤失效向量。
+- 提供 React + Tailwind CSS 本地搜题界面，支持上传 / 粘贴截图、相似题列表、题目详情与来源图预览。
 - 提供 CLI 入口。
 - 使用生成的样本 PDF 做单元测试和集成测试，不依赖真实本地材料。
 
 ## 暂未实现
 
 - 文本搜索接口
-- Web UI
 - 完整题目解析
 - 跨页拼题、多栏通用切题、图标答案识别与单题审核修正
 - 提取后自动触发单题索引，目前需显式运行索引命令
@@ -475,6 +475,54 @@ GET http://127.0.0.1:8000/images/{image_id}
 
 API 不负责生成图片向量；需要先使用 CLI 完成 PDF 处理和图片向量入库。
 
+## 运行 React 搜题界面
+
+前端位于 `frontend/`，使用 React、TypeScript、Vite 和 Tailwind CSS。需要 Node.js 26 或更高版本及 npm；依赖只安装到前端目录，锁文件用于复现安装。Python 服务继续使用项目根目录 `.conda/`。
+
+先按上面的步骤准备题库，并运行 `index-questions`。构建前端后，从项目根目录启动 FastAPI：
+
+```powershell
+npm.cmd --prefix frontend ci
+npm.cmd --prefix frontend run build
+.\.conda\python.exe -m uvicorn img2answer.api:app --host 127.0.0.1 --port 8000
+```
+
+浏览器访问 `http://127.0.0.1:8000/`。`IMG2ANSWER_WEB_DIST` 默认是 `frontend/dist`，可在服务端配置中指定其他构建目录；未构建时根页面返回 `503` 和构建提示，已有 API 与 `/docs` 仍可使用。首次构建后重启服务以挂载静态资源。构建结果不提交到 Git，运行本地安装版本时从项目根目录启动。
+
+界面支持选择图片，或聚焦粘贴区域后按 Ctrl+V 粘贴截图；结果数量留空时使用服务端默认值。搜索结果可切换查看完整题图、题干、选项、答案和解析。答案持续显示“待核对”，缺失或冲突答案有明确提示；记录更新时隐藏失效答案，提供刷新详情。更换查询图片后会清空旧结果并取消旧请求。
+
+开发时，在两个终端分别运行后端和 Vite：
+
+```powershell
+# 终端一，从项目根目录启动后端
+.\.conda\python.exe -m uvicorn img2answer.api:app --host 127.0.0.1 --port 8000
+# 终端二，从项目根目录启动前端
+npm.cmd --prefix frontend run dev
+```
+
+开发页面为 `http://127.0.0.1:5173/`，Vite 将 `/search`、`/questions` 和 `/image-content` 代理到 `127.0.0.1:8000`。前端不读取项目实际 `.env`，数据库、模型与索引配置仍由后端读取。
+
+前端检查：
+
+```powershell
+npm.cmd --prefix frontend test
+npm.cmd --prefix frontend run build
+npm.cmd --prefix frontend run test:e2e
+```
+
+浏览器测试在 Windows 默认使用已安装的 Edge；其他系统使用 Playwright Chromium，首次运行前在 `frontend/` 中执行 `npx playwright install chromium`。可用 `PLAYWRIGHT_CHANNEL` 指定已安装浏览器。默认浏览器用例以生成 API 响应验证交互，真实后端用例单独运行：
+
+```powershell
+# 终端一：必须指定新的或空的测试目录，生成测试题库并启动内置页面
+.\.conda\python.exe tests\serve_web_fixture.py --data-dir data\web-ui-smoke --port 8765
+# 终端二：真实 FastAPI + ChromaDB + 构建后 React 页面
+$env:IMG2ANSWER_E2E_REAL_URL = 'http://127.0.0.1:8765'
+$env:IMG2ANSWER_E2E_QUERY_IMAGE = (Resolve-Path data\web-ui-smoke\query.png).Path
+npm.cmd --prefix frontend run test:e2e -- --grep 'built UI with real'
+```
+
+此联调只使用生成的 OCR / 图片和 Pillow Hash，不调用在线 OCR 或下载视觉模型。测试后清除当前终端中的两个 `IMG2ANSWER_E2E_*` 环境变量，再运行默认浏览器用例。`node_modules`、构建结果、缓存和浏览器测试报告均被 Git 忽略。
+
 ## 运行测试
 
 完整测试包含 OCR SDK 参数校验，需要先安装所有测试使用的可选依赖：
@@ -524,6 +572,7 @@ $env:PYTHONPATH = "src"
 - 单题锚点、同行边界、完整图形截图、文字字段与待核对原因
 - 离线 CLI、快照绑定、重复提取、零候选替换和旧数据库兼容
 - 单题写入失败回滚、产物清理及并发导入版本变化拒绝
+- React 静态页面 / 资源服务、未构建提示及新配置优先级
 
 OCR 自动化测试使用模拟云端响应，不上传题库或产生云端调用费用，不代表真实材料的识别准确率。运行全部测试前需要安装 `.[vector,api,ocr]` 可选依赖。
 
@@ -540,7 +589,7 @@ python -c "import img2answer; print(img2answer.__version__)"
 python -m unittest discover -s tests -v
 ```
 
-CI 不依赖 `data/`、`docs/`、`.conda/` 等本地路径。
+前端检查使用 Node 26，执行 `npm ci`、类型检查与构建、交互测试，以及 Chromium 浏览器的生成响应流程。真实后端浏览器联调使用上面的独立命令；现有 Python 集成测试继续验证真实 ChromaDB 链路。CI 不依赖 `data/`、`docs/`、`.conda/` 等本地路径。
 
 ## 开发流程
 
